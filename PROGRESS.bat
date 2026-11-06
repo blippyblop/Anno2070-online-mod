@@ -53,6 +53,17 @@ findstr /c:"CONQ-HTTP <-" "%SV%" >nul && (echo    conquest server   : reached) |
 findstr /c:"MatchMakingServiceProtocol::" "%SV%" >nul && (echo    multiplayer lobby : reached) || echo    multiplayer lobby : not reached
 
 echo.
+echo [ saved progress ]
+set "SPY="
+where python >nul 2>&1 && set "SPY=python"
+if not defined SPY if exist "%LOCALAPPDATA%\Programs\Python\Python310\python.exe" set "SPY=%LOCALAPPDATA%\Programs\Python\Python310\python.exe"
+if defined SPY (
+  "!SPY!" "%~dp0server\state_report.py" "%~dp0server\state.json"
+) else (
+  echo    python not found - cannot read server\state.json
+)
+
+echo.
 echo ---------------------------------------------------------------------
 if !RV! GEQ 25 (
   echo VERDICT: a full online session - the server answered !RV! calls with

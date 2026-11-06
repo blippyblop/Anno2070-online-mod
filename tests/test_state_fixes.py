@@ -290,6 +290,32 @@ def test_state_file_is_shared(tmp):
           R.open_store(path).state["voting"]["infos"]["0"]["f6"] == CV.FACTION_ECO)
 
 
+def test_json_file_is_the_save(tmp):
+    print("the JSON file is the save: schema, backup, report")
+    import subprocess
+    path = os.path.join(tmp, "save", "state.json")
+    store = R.open_store(path)
+    payload(VOTING, "Vote_V1", store, le32(0) + le32(CV.FACTION_ECO))
+    store.save()
+    doc = json.load(open(path, encoding="utf-8"))
+    check("the save carries a schema version", doc.get("schema") == R.STATE_SCHEMA, doc.get("schema"))
+    check("the previous save is kept once", os.path.isfile(path + ".bak"))
+    check("no temp file is left behind", not os.path.isfile(path + ".tmp"))
+
+    report = os.path.join(HERE, os.pardir, "server", "state_report.py")
+    out = subprocess.run([sys.executable, report, path], stdout=subprocess.PIPE,
+                         stderr=subprocess.STDOUT, universal_newlines=True,
+                         timeout=60).stdout
+    check("the report reads the career points", "career points    : 50" in out, out[:400])
+    check("the report lists the ARK box", "ARK item box     : 6 item(s)" in out, out[:400])
+    check("the report shows the vote", "your vote Eco" in out, out[:400])
+    missing = os.path.join(tmp, "nope", "state.json")
+    out2 = subprocess.run([sys.executable, report, missing], stdout=subprocess.PIPE,
+                          stderr=subprocess.STDOUT, universal_newlines=True,
+                          timeout=60).stdout
+    check("a missing file is reported, not crashed on", "no state file yet" in out2, out2[:200])
+
+
 def main():
     tmp = tempfile.mkdtemp(prefix="anno-statefix-")
     try:
@@ -302,6 +328,7 @@ def main():
         test_stats_capped()
         test_day_rotation()
         test_state_file_is_shared(tmp)
+        test_json_file_is_the_save(tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     if failures:

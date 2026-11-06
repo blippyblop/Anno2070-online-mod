@@ -36,6 +36,14 @@ Fixed
   `period_days=0` for A/B runs.
 
 Added
+- **`state_report.py` + a "saved progress" section in PROGRESS.bat.** After a
+  session the player sees the career points, the ARK box socket by socket, both
+  vote panels (own vote + counted votes), the event of the day and the missions
+  solved - read straight out of `server/state.json`, so "did it save?" is one
+  double-click away.
+- **The JSON save is hardened.** Every save now records `"schema": 2`, is
+  written to `.tmp`, flushed/fsynced, and the previous good file is kept once
+  as `state.json.bak` before the new one replaces it.
 - **World events pay out.** A solved mission credits reputation from the shipped
   reward table (1/5/10 points, 50/150/300 reputation) into
   `players.<pid>.reputation` and the world-event totals, the event's progress

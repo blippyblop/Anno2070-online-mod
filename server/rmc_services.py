@@ -49,6 +49,7 @@ import json
 import traceback
 import os
 import re
+import shutil
 import threading
 import time
 
@@ -318,8 +319,19 @@ LOG = None                 # set by the server (mimic_server) so failures are vi
 _FAILED_REPORTED = set()
 
 
+#: Bumped when the shape of the saved document changes in a way a reader must
+#: know about.  Written into every save (``"schema": N``) so a future build can
+#: migrate instead of guessing.
+STATE_SCHEMA = 2
+
+
 class Store:
-    """Whole game state in one JSON document, saved atomically on mutation."""
+    """Whole game state in one JSON document, saved atomically on mutation.
+
+    On disk: ``state.json`` (the live save), ``state.json.bak`` (the previous
+    one, written once, as a safety net) and ``state.json.tmp`` (only while a
+    save is in flight).
+    """
 
     def __init__(self, path):
         self.path = path
@@ -344,14 +356,33 @@ class Store:
         _migrate_state(self.state)
 
     def save(self):
+        """Write the whole document atomically, keeping one previous copy.
+
+        ``state.json`` is the player's only save: a truncated or half-written
+        file would lose the ARK box, the votes, the career points and the event
+        progress at once.  So: write ``.tmp``, fsync it, copy the *previous*
+        good file to ``.bak`` (first run only), then ``os.replace`` the new one
+        into place.  A crash can therefore never leave a partial file behind.
+        """
         if not self.path:
             return
         with self.lock:
             tmp = self.path + ".tmp"
             try:
                 os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
+                self.state["schema"] = STATE_SCHEMA
                 with open(tmp, "w", encoding="utf-8") as f:
                     json.dump(self.state, f, indent=1, sort_keys=True)
+                    f.flush()
+                    try:
+                        os.fsync(f.fileno())
+                    except OSError:
+                        pass
+                if os.path.isfile(self.path) and not os.path.isfile(self.path + ".bak"):
+                    try:
+                        shutil.copy2(self.path, self.path + ".bak")
+                    except OSError:
+                        pass
                 os.replace(tmp, self.path)
             except Exception as e:                    # noqa: BLE001
                 print(f"[store] save failed ({e!r})")
