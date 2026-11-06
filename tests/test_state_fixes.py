@@ -316,6 +316,41 @@ def test_json_file_is_the_save(tmp):
     check("a missing file is reported, not crashed on", "no state file yet" in out2, out2[:200])
 
 
+def test_legacy_state_is_adopted(tmp):
+    print("an older data/mimic_state.json is taken over, never overwritten")
+    import mimic_server
+
+    pkg = os.path.join(tmp, "pkg")
+    os.makedirs(os.path.join(pkg, "server"))
+    os.makedirs(os.path.join(pkg, "data"))
+    legacy = os.path.join(pkg, "data", "mimic_state.json")
+    with open(legacy, "w", encoding="utf-8") as fh:
+        json.dump({"players": {"default": {"name": "Old",
+                                           "arkItems": [{"a": 1, "b": 0, "c": 60530, "d": 1}]}}}, fh)
+    target = os.path.join(pkg, "server", "state.json")
+
+    saved = mimic_server.HERE_DIR
+    try:
+        mimic_server.HERE_DIR = os.path.join(pkg, "server")
+        got = mimic_server._adopt_legacy_state(target)
+    finally:
+        mimic_server.HERE_DIR = saved
+    check("the legacy file was adopted", got == target and os.path.isfile(target), got)
+    check("its content came across",
+          R.open_store(target).player("default")["name"] == "Old")
+
+    with open(target, "w", encoding="utf-8") as fh:
+        json.dump({"players": {"default": {"name": "New"}}}, fh)
+    saved = mimic_server.HERE_DIR
+    try:
+        mimic_server.HERE_DIR = os.path.join(pkg, "server")
+        mimic_server._adopt_legacy_state(target)
+    finally:
+        mimic_server.HERE_DIR = saved
+    check("an existing save is never replaced",
+          R.open_store(target).player("default")["name"] == "New")
+
+
 def main():
     tmp = tempfile.mkdtemp(prefix="anno-statefix-")
     try:
@@ -329,6 +364,7 @@ def main():
         test_day_rotation()
         test_state_file_is_shared(tmp)
         test_json_file_is_the_save(tmp)
+        test_legacy_state_is_adopted(tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     if failures:
