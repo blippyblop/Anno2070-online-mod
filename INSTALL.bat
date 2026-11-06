@@ -21,14 +21,21 @@ echo =====================================================================
 echo.
 
 set CFG=%~dp0config.ini
-for /f "usebackq tokens=1,2 delims==" %%A in ("%CFG%") do (
-  set "k=%%A"
-  set "v=%%B"
-  set "k=!k: =!"
-  if /i "!k!"=="path" set "GAMEDIR=%%B"
-  if /i "!k!"=="name" set "PNAME=%%B"
+rem ---------- read config.ini (comments start with ';' or '#') -----------
+for /f "usebackq eol=; tokens=1,* delims==" %%A in ("%CFG%") do call :cfg "%%A" "%%B"
+if defined GAMEDIR (
+  for /f "tokens=* delims= " %%x in ("!GAMEDIR!") do set "GAMEDIR=%%x"
 )
-set "GAMEDIR=%GAMEDIR: =%"
+if defined PNAME (
+  for /f "tokens=* delims= " %%x in ("!PNAME!") do set "PNAME=%%x"
+)
+if defined HPORT (
+  for /f "tokens=* delims= " %%x in ("!HPORT!") do set "HPORT=%%x"
+)
+if defined LOGDIR (
+  for /f "tokens=* delims= " %%x in ("!LOGDIR!") do set "LOGDIR=%%x"
+)
+
 if defined GAMEDIR if not exist "%GAMEDIR%\Anno5.exe" (
   echo config.ini [game] path does not contain Anno5.exe: %GAMEDIR%
   set "GAMEDIR="
@@ -36,6 +43,18 @@ if defined GAMEDIR if not exist "%GAMEDIR%\Anno5.exe" (
 
 if not defined GAMEDIR (
   echo Looking for Anno 2070 ...
+rem registry hints first (Steam library, Ubisoft install dir)
+for /f "tokens=2,*" %%A in ('reg query "HKCU\Software\Valve\Steam" /v SteamPath 2^>nul') do (
+  set "STEAM=%%B"
+)
+if defined STEAM (
+  for %%S in ("!STEAM:\=/!") do (
+    if exist "%%~S\steamapps\common\Anno 2070\Anno5.exe" set "GAMEDIR=%%~S\steamapps\common\Anno 2070"
+  )
+)
+for /f "tokens=2,*" %%A in ('reg query "HKLM\SOFTWARE\WOW6432Node\Ubisoft\Anno 2070" /v InstallDir 2^>nul') do (
+  if exist "%%B\Anno5.exe" set "GAMEDIR=%%B"
+)
   for %%C in (
     "C:\Program Files (x86)\Steam\steamapps\common\Anno 2070"
     "C:\Program Files\Steam\steamapps\common\Anno 2070"
@@ -110,6 +129,21 @@ if defined PY (
 echo.
 echo Done. Next: run PLAY.bat.
 echo.
+
+
+:cfg
+rem %1 = key, %2 = value (both trimmed). Called once per config.ini line.
+set "k=%~1"
+set "v=%~2"
+rem keys never contain spaces, so removing them all is safe and kills the
+rem trailing space that "path =" leaves behind ("=path" would never match)
+set "k=!k: =!"
+for /f "tokens=* delims= " %%x in ("!v!") do set "v=%%x"
+if /i "!k!"=="name"        set "PNAME=!v!"
+if /i "!k!"=="path"        set "GAMEDIR=!v!"
+if /i "!k!"=="http_port"   set "HPORT=!v!"
+if /i "!k!"=="log_dir"     set "LOGDIR=!v!"
+goto :eof
 
 :end
 if /i not "%1"=="nopause" pause

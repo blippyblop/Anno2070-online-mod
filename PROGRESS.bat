@@ -22,12 +22,8 @@ for /f %%c in ('findstr /c:"status=0" "%SV%" ^| find /c /v ""') do set FAIL=%%c
 set PUSH=0
 for /f %%c in ('findstr /c:"pushed space-params" "%SV%" ^| find /c /v ""') do set PUSH=%%c
 set NAME=
-for /f "usebackq tokens=1,2 delims==" %%A in ("%~dp0config.ini") do (
-  set "k=%%A"
-  set "v=%%B"
-  set "k=!k: =!"
-  if /i "!k!"=="name" set "NAME=%%B"
-)
+for /f "usebackq eol=; tokens=1,* delims==" %%A in ("%~dp0config.ini") do call :cfg "%%A" "%%B"
+set "NAME=!PNAME!"
 
 echo.
 echo [ session ]   player name       : !NAME!
@@ -66,6 +62,21 @@ if !RV! GEQ 25 (
   echo          That is the known client-side crash - run PLAY.bat again.
 )
 echo ---------------------------------------------------------------------
+
+
+:cfg
+rem %1 = key, %2 = value (both trimmed). Called once per config.ini line.
+set "k=%~1"
+set "v=%~2"
+rem keys never contain spaces, so removing them all is safe and kills the
+rem trailing space that "path =" leaves behind ("=path" would never match)
+set "k=!k: =!"
+for /f "tokens=* delims= " %%x in ("!v!") do set "v=%%x"
+if /i "!k!"=="name"        set "PNAME=!v!"
+if /i "!k!"=="path"        set "GAMEDIR=!v!"
+if /i "!k!"=="http_port"   set "HPORT=!v!"
+if /i "!k!"=="log_dir"     set "LOGDIR=!v!"
+goto :eof
 
 :end
 if /i not "%1"=="nopause" pause

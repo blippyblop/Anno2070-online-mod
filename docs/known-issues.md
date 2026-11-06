@@ -80,7 +80,16 @@ this repository, and the code that needs them degrades gracefully:
 
 Write your own extractor against your own install if you want the full table.
 
-## 8. Antivirus / SmartScreen
+## 8. It must be started from your own desktop session
+
+`PLAY.bat` has to run in the same interactive Windows session you play in —
+double-clicking it is exactly right. Starting it from a **service**, a **remote
+shell** (SSH/WinRM) or a **scheduled task set to "run whether user is logged on or
+not"** puts the game in session 0, where it has no desktop: the process starts but
+its online bootstrap never finishes, and `PROGRESS.bat` reports
+`RV calls answered : 0`.
+
+## 9. Antivirus / SmartScreen
 
 The package contains a small DLL that is copied next to a game executable, which
 is the same shape as a loader an attacker would use, and it is unsigned. Windows
