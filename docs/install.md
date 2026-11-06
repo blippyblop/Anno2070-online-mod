@@ -1,5 +1,15 @@
 # Install, in detail
 
+## The easy way (recommended)
+
+Run **`Anno2070Online-Setup.exe`**. It asks for your player name (and for the
+game folder only if it cannot find it), then installs everything into
+`%LOCALAPPDATA%\Anno2070Online`, copies the loader next to `Anno5.exe`, and adds
+a Desktop + Start Menu shortcut. Start the game from that shortcut from then on.
+No Python is required.
+
+## The manual way (developers / troubleshooting)
+
 ## Requirements
 
 | | |

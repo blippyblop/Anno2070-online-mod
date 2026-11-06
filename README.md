@@ -22,22 +22,34 @@ copy of the game's code is included or modified.
 ## Install
 
 1. Install Anno 2070 (3.0.8051 / GOLDMASTER) as usual.
-2. Install **Python 3.8+** (python.org, tick "Add to PATH").
-3. Edit `config.ini` — at minimum, set your name:
+2. Run **`Anno2070Online-Setup.exe`** and follow the two prompts
+   (your player name, and the game folder if it is not auto-detected).
+3. Start the game from the **"Anno 2070 - Local Online"** shortcut on your
+   Desktop / Start Menu.
 
-   ```ini
-   [player]
-   name = Captain
-   ```
+That is all. **No Python is needed** — the installer carries a frozen run-time.
+It installs to `%LOCALAPPDATA%\Anno2070Online`, puts the loader DLL next to
+`Anno5.exe`, and writes a `config.ini` you can edit later (name, ports, options).
 
-   If the game is not in a usual Steam/Ubisoft folder, set `[game] path` too.
-4. Run **`INSTALL.bat`** (copies the loader next to `Anno5.exe`, checks Python).
-5. Run **`PLAY.bat`**. That is the whole interface: it starts the local server,
-   launches the game, and retries if the client hits its known bootstrap crash.
-6. **`PROGRESS.bat`** any time, for a summary of the last session.
+The launcher window shows what is happening, restarts the game automatically if
+the client hits its known bootstrap crash, and prints a session summary when you
+quit. `Anno2070Online.exe --status` re-prints that summary at any time.
 
-Nothing is installed system-wide, no service is registered, and nothing runs at
-startup. Delete the folder and the loader DLL to uninstall.
+### From source (developers)
+
+Everything the exe is built from is in this repository:
+
+```
+config.ini            player name, game path, ports, options
+packaging/            launcher_app.py, setup_app.py, build-exes.ps1
+server/               the backend (SDK HTTP, notifications WS, RMC, PRUDP, conquest)
+loader/               our upc_r2 replacement (C source + prebuilt DLL)
+tests/                offline suites, no game needed (tests/run_all.sh)
+INSTALL.bat / PLAY.bat / PROGRESS.bat   the scripted equivalents of the exe flow
+```
+
+Build the exes with `powershell -ExecutionPolicy Bypass -File packaging\build-exes.ps1`
+(needs Python 3.8+ and pip; PyInstaller is installed automatically).
 
 ## What is in this repo
 
