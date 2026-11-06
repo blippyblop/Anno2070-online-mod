@@ -41,6 +41,9 @@ if defined GAMEDIR if not exist "%GAMEDIR%\Anno5.exe" (
   set "GAMEDIR="
 )
 
+if not defined GAMEDIR if exist "%~dp0Anno5.exe" set "GAMEDIR=%~dp0"
+rem or one level up (the zip keeps its own folder inside the game folder)
+if not defined GAMEDIR if exist "%~dp0..\Anno5.exe" set "GAMEDIR=%~dp0.."
 if not defined GAMEDIR (
   echo Looking for Anno 2070 ...
 rem registry hints first (Steam library, Ubisoft install dir)

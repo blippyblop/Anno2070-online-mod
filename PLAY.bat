@@ -44,6 +44,11 @@ if defined STEAM (
 for /f "tokens=2,*" %%A in ('reg query "HKLM\SOFTWARE\WOW6432Node\Ubisoft\Anno 2070" /v InstallDir 2^>nul') do (
   if exist "%%B\Anno5.exe" set "GAMEDIR=%%B"
 )
+rem if the script sits next to Anno5.exe (zip extracted into the game
+rem folder), that IS the game folder - no config needed
+if not defined GAMEDIR if exist "%~dp0Anno5.exe" set "GAMEDIR=%~dp0"
+rem or one level up (the zip keeps its own folder inside the game folder)
+if not defined GAMEDIR if exist "%~dp0..\Anno5.exe" set "GAMEDIR=%~dp0.."
 if not defined GAMEDIR (
   for %%C in (
     "C:\Program Files (x86)\Steam\steamapps\common\Anno 2070"

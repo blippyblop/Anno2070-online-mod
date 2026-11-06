@@ -25,7 +25,22 @@ Not working:
 > zero failed replies). Multiplayer stays out of reach for the reason explained
 > in `docs/known-issues.md` - it needs a client-side change, not a server one.
 
-# Install (no Python needed)
+# Install
+
+## The PLAY.bat build (recommended right now)
+
+Download **`Anno2070Online-playbat-v0.1.0.zip`** from the release, extract it so
+the folder sits inside your Anno 2070 folder, install Python 3.8+ once, then
+double-click `Anno2070Online\PLAY.bat`. This is the build that is verified
+working (3 consecutive clean launches). The .exe installer below is newer but its
+launcher does not yet behave like PLAY.bat - use this zip until that is fixed.
+
+```
+...\Anno 2070\Anno5.exe
+...\Anno 2070\Anno2070Online\PLAY.bat      <- double-click this
+```
+
+## The .exe build (experimental)
 
 1. Install Anno 2070 (3.0.8051 / GOLDMASTER) as usual. (This is the latest steam release)
 2. Download `Anno2070Online-Setup.exe` from the [latest release](../../releases/latest)
