@@ -131,7 +131,7 @@ def ref_encode_world_event(doc):
     return b"".join([
         struct.pack("<I", int(doc["a"])),                     # f1
         struct.pack("<I", int(doc["b"])),                     # f2
-        struct.pack("<H", len(name)), name,                   # f3 String (len w/o NUL)
+        struct.pack("<H", len(name) + 1), name, b"\x00",      # f3 String (incl NUL)
         struct.pack("<Q", int(doc["start"])),                 # f4 packed date
         b"\x01" if doc["running"] else b"\x00",               # f5 bool, 1 byte
         struct.pack("<I", int(doc["f"])),                     # f6
@@ -160,8 +160,10 @@ def ref_decode_world_event(buf):
         return struct.unpack_from("<Q", take(8))[0]
 
     def string():
+        # engine String: the u16 count INCLUDES the terminating NUL
         n = struct.unpack_from("<H", take(2))[0]
-        return take(n).decode("ascii")
+        raw = take(n)
+        return raw[:-1].rstrip(b"\x00").decode("ascii")
 
     def boolean():
         raw = take(1)
@@ -441,8 +443,8 @@ def test_wire_placement():
 
     doc = ce.latest_event(now=NOW)
     blob = ref_encode_world_event(doc)
-    eq(len(blob), 4 + 4 + 2 + len(doc["name"]) + 8 + 1 + 4 + 4 + 1,
-       "record length = 4+4+(2+len)+8+1+4+4+1 (no padding, bools are 1 byte)")
+    eq(len(blob), 4 + 4 + 2 + len(doc["name"]) + 1 + 8 + 1 + 4 + 4 + 1,
+       "record length = 4+4+(2+len+1)+8+1+4+4+1 (no padding, bools are 1 byte)")
 
     got = ref_decode_world_event(blob)
     eq(got["f1"], doc["a"], "f1 = instance id")
@@ -605,13 +607,13 @@ def test_event_stats():
         body = payload[len(ref_name_block("WorldEventServiceProtocol",
                                           "GetStats_V1")):]
         expect = (struct.pack("<I", 2)
-                  + b"".join(struct.pack("<H", len(e["name"]))
-                             + e["name"].encode("ascii")
+                  + b"".join(struct.pack("<H", len(e["name"]) + 1)
+                             + e["name"].encode("ascii") + b"\x00"
                              + struct.pack("<III", e["a"], e["b"], e["c"])
                              for e in stats["listA"])
                   + struct.pack("<I", 2)
-                  + b"".join(struct.pack("<H", len(e["name"]))
-                             + e["name"].encode("ascii")
+                  + b"".join(struct.pack("<H", len(e["name"]) + 1)
+                             + e["name"].encode("ascii") + b"\x00"
                              + struct.pack("<III", e["a"], e["b"], e["c"])
                              for e in stats["listB"])
                   + struct.pack("<III", stats["c0"], stats["c1"], stats["c2"]))

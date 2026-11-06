@@ -59,9 +59,10 @@ if !RV! GEQ 25 (
   echo          !FAIL! failures.
 ) else (
   echo VERDICT: the client did not finish its online bootstrap this time.
-  echo          That is the known client-side crash - run PLAY.bat again.
+  echo          That is a race inside the game's own client - run PLAY.bat again.
 )
 echo ---------------------------------------------------------------------
+goto :end
 
 
 :cfg

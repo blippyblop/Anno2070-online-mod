@@ -23,9 +23,18 @@ def name_block(proto, method):
 
 
 def qstr(text):
-    """Quazal String: u16 length EXCLUDING the NUL, then the bytes."""
+    """Quazal String: u16 length INCLUDING the NUL, then the bytes + NUL.
+
+    The engine's own writer (FUN_141370f90) emits ``u16 (strlen + 1)`` and then
+    ``strlen + 1`` bytes, and its reader (FUN_141371620) sizes the object to
+    ``len + 1`` while copying ``len`` bytes -- so byte ``len - 1`` must be the
+    0x00 terminator.  Writing ``len`` without it left the client's last byte as
+    uninitialised heap memory, which is the string that rendered as
+    "Player" followed by a few boxes.
+    """
     b = text.encode("ascii") if isinstance(text, str) else bytes(text)
-    return struct.pack("<H", len(b)) + b
+    b = b[:0xFFFE]                       # the count must stay a u16
+    return struct.pack("<H", len(b) + 1) + b + b"\x00"
 
 
 def u8(v):

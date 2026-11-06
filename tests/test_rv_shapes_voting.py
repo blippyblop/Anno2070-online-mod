@@ -67,9 +67,9 @@ def ref_name_block(proto, method):
 
 
 def s(text):
-    """Quazal String: u16 len excluding NUL + bytes."""
+    """Quazal String: u16 len INCLUDING the NUL + bytes + NUL."""
     raw = text.encode("ascii")
-    return struct.pack("<H", len(raw)) + raw
+    return struct.pack("<H", len(raw) + 1) + raw + b"\x00"
 
 
 def w32(v):
@@ -125,12 +125,12 @@ def test_value_types():
 
     # VoteEntry: String, u32, u32
     eq(voting.vote_entry({"voter": "bob", "a": 7, "b": 9}),
-       b"\x03\x00bob" + w32(7) + w32(9), "vote_entry mapping")
+       b"\x04\x00bob\x00" + w32(7) + w32(9), "vote_entry mapping")
     eq(voting.vote_entry(("bob", 7, 9)),
-       b"\x03\x00bob" + w32(7) + w32(9), "vote_entry tuple")
+       b"\x04\x00bob\x00" + w32(7) + w32(9), "vote_entry tuple")
     eq(voting.vote_entry({"voter": "bob", "choice": 7, "ts": 9}),
-       b"\x03\x00bob" + w32(7) + w32(9), "vote_entry choice/ts aliases")
-    eq(voting.vote_entry(), b"\x00\x00" + w32(0) + w32(0), "vote_entry default")
+       b"\x04\x00bob\x00" + w32(7) + w32(9), "vote_entry choice/ts aliases")
+    eq(voting.vote_entry(), b"\x01\x00\x00" + w32(0) + w32(0), "vote_entry default")
 
     # VotingInfo: u32, u32, u32, bool, u64, u32, u64, u64, u32, u32
     info = {"id": 1, "f2": 2, "f3": 3, "running": True,
@@ -168,20 +168,20 @@ def test_value_types():
     we = {"a": 1, "b": 2, "name": "X", "start": 7,
           "running": True, "f": 5, "g": 6, "visited": False}
     eq(voting.world_event(we),
-       w32(1) + w32(2) + b"\x01\x00X" + w64(7) + B_TRUE + w32(5) + w32(6)
+       w32(1) + w32(2) + b"\x02\x00X\x00" + w64(7) + B_TRUE + w32(5) + w32(6)
        + B_FALSE, "world_event mapping")
-    eq(len(voting.world_event(we)), 4 + 4 + 3 + 8 + 1 + 4 + 4 + 1,
+    eq(len(voting.world_event(we)), 4 + 4 + 4 + 8 + 1 + 4 + 4 + 1,
        "world_event length")
-    eq(voting.world_event(), w32(0) + w32(0) + b"\x00\x00" + w64(0) + B_FALSE
+    eq(voting.world_event(), w32(0) + w32(0) + b"\x01\x00\x00" + w64(0) + B_FALSE
        + w32(0) + w32(0) + B_FALSE, "world_event default")
 
     # WorldEventStatsEntry: String, 3 x u32
     eq(voting.we_stats_entry({"name": "e", "a": 1, "b": 2, "c": 3}),
-       b"\x01\x00e" + w32(1) + w32(2) + w32(3), "we_stats_entry mapping")
+       b"\x02\x00e\x00" + w32(1) + w32(2) + w32(3), "we_stats_entry mapping")
 
     # WorldEventStats: list A, list B, 3 x u32
     eq(voting.we_stats([{"name": "e", "a": 1, "b": 2, "c": 3}], [], 7, 8, 9),
-       w32(1) + b"\x01\x00e" + w32(1) + w32(2) + w32(3)
+       w32(1) + b"\x02\x00e\x00" + w32(1) + w32(2) + w32(3)
        + w32(0) + w32(7) + w32(8) + w32(9), "we_stats lists + 3 u32")
     eq(voting.we_stats({"listA": [], "listB": [], "c0": 1, "c1": 2, "c2": 3}),
        w32(0) + w32(0) + w32(1) + w32(2) + w32(3), "we_stats record")
@@ -189,8 +189,8 @@ def test_value_types():
 
     # WorldEventCompletedMission: String, u32, String
     eq(voting.completed_mission({"a": "m", "id": 42, "b": "t"}),
-       b"\x01\x00m" + w32(42) + b"\x01\x00t", "completed_mission mapping")
-    eq(voting.completed_mission(), b"\x00\x00" + w32(0) + b"\x00\x00",
+       b"\x02\x00m\x00" + w32(42) + b"\x02\x00t\x00", "completed_mission mapping")
+    eq(voting.completed_mission(), b"\x01\x00\x00" + w32(0) + b"\x01\x00\x00",
        "completed_mission default")
 
     # --- WorldEventTemplate (request side, writer 0x140e09bb0) ------------
@@ -222,7 +222,7 @@ def test_value_types():
     tmpl = {"id": 5, "name": "X", "u1": 1, "u2": 2,
             "missions": {7: (8, 9), 3: (4, 5)},
             "values": [10, 11], "scores": {2: 1}}
-    expected_tmpl = (w32(5) + b"\x01\x00X" + w32(1) + w32(2) + w32(0) * 10
+    expected_tmpl = (w32(5) + b"\x02\x00X\x00" + w32(1) + w32(2) + w32(0) * 10
                      + w32(2) + w32(3) + w32(4) + w32(5) + w32(7) + w32(8)
                      + w32(9)
                      + w32(2) + w32(10) + w32(11)
@@ -230,7 +230,7 @@ def test_value_types():
     eq(voting.world_event_template(tmpl), expected_tmpl,
        "world_event_template field order (writer 0x140e09bb0)")
     eq(len(voting.world_event_template(tmpl)),
-       4 + 3 + 4 * voting.WE_TEMPLATE_U32_COUNT + (4 + 2 * 12) + (4 + 8)
+       4 + 4 + 4 * voting.WE_TEMPLATE_U32_COUNT + (4 + 2 * 12) + (4 + 8)
        + (4 + 8), "world_event_template length")
     eq(voting.WE_TEMPLATE_U32_COUNT, 12, "12 u32 inside the template")
 
@@ -244,10 +244,10 @@ def test_value_types():
 
     # default record: id, empty string, 12 zero u32, 3 empty containers
     eq(voting.world_event_template(),
-       w32(0) + b"\x00\x00" + w32(0) * 12 + w32(0) * 3,
+       w32(0) + b"\x01\x00\x00" + w32(0) * 12 + w32(0) * 3,
        "world_event_template default")
-    eq(len(voting.world_event_template()), 4 + 2 + 48 + 12,
-       "world_event_template default length = 66")
+    eq(len(voting.world_event_template()), 4 + 3 + 48 + 12,
+       "world_event_template default length = 67")
 
 
 # --------------------------------------------------------------------------
@@ -309,7 +309,7 @@ def test_method_payloads():
 
     eq(voting.get_last_voters([{"voter": "a", "a": 1, "b": 2}]),
        ref_name_block(VOTING, "GetLastVoters_V1") + w32(1)
-       + b"\x01\x00a" + w32(1) + w32(2), "get_last_voters entry shape")
+       + b"\x02\x00a\x00" + w32(1) + w32(2), "get_last_voters entry shape")
 
     eq(voting.get_voting_stats([{"id": 3, "f1": 4, "votes": {1: 2}}]),
        ref_name_block(VOTING, "GetVotingStats_V1") + w32(1) + w32(3) + w32(4)
@@ -368,7 +368,7 @@ def test_method_payloads():
     body = payload[len(block):]
     eq(payload, block + voting.world_event(ev),
        "get_latest_world_event = name + bare WorldEvent")
-    eq(len(body), 4 + 4 + 3 + 8 + 1 + 4 + 4 + 1,
+    eq(len(body), 4 + 4 + 4 + 8 + 1 + 4 + 4 + 1,
        "get_latest_world_event has no count prefix")
     eq(voting.get_latest_world_event({"name": "solo"}),
        ref_name_block(WE, "GetLatestWorldEvent_V1")

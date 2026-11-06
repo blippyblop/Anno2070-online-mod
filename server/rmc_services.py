@@ -260,6 +260,26 @@ def _migrate_state(state):
         we.pop("active", None)
         if "running" not in we:
             we["running"] = False         # wire f5 inverted: False == running
+        for key, default in (("day", None), ("a", content_events.EVENT_INSTANCE_ID),
+                             ("b", content_events.MISSION_SET_INDEX),
+                             ("since", 0)):
+            we.setdefault(key, default)
+    # an older state file stored the reputation map as a *list*; writing to it
+    # then raised IndexError inside SetReputationPoints and the client's points
+    # were dropped (it saw a clean void reply and believed they were saved)
+    players = state.get("players")
+    if isinstance(players, dict):
+        for doc in players.values():
+            if not isinstance(doc, dict):
+                continue
+            rep = doc.get("reputation")
+            if not isinstance(rep, dict):
+                doc["reputation"] = {}
+            else:
+                # JSON turns the u32 keys into strings; a mix of both makes
+                # store.save()'s sort_keys raise TypeError and lose the write
+                doc["reputation"] = {int(k): v for k, v in rep.items()
+                                     if str(k).lstrip("-").isdigit()}
     return state
 
 
@@ -711,16 +731,39 @@ def h_get_reputation_points(store, r, ctx):
 
 
 def h_are_rep_missing(store, r, ctx):
+    """``AreReputationPointsMissing_V1``: one bool, per reputation key.
+
+    The request's u32 is the key being asked about (0 when the body is empty).
+    Answering "missing" forever while the map was empty made the client keep
+    its locally-earned points instead of asking for the server's.
+    """
     p = store.player(_ctx_pid(ctx))
-    return _reply(PROFILE, "AreReputationPointsMissing_V1",
-                  missing=0 if p.get("reputation") else 1)
+    key = r.u32() if r.remaining() >= 4 else 0
+    rep = _int_keyed(p.get("reputation", {}))
+    missing = 0 if (rep.get(key) or len(rep) > 1) else 1
+    return _reply(PROFILE, "AreReputationPointsMissing_V1", missing=missing)
 
 
 def h_set_reputation_points(store, r, ctx):
+    """``SetReputationPoints_V1``: u32 key, u32 value -> void.
+
+    ``p["reputation"]`` is coerced to a dict first: an older state file stored
+    it as a list, and ``setdefault(...)[key] = value`` on a list raises
+    IndexError, which the reply path swallows -- so the client was told the
+    points were saved while nothing was written.
+    """
     p = store.player(_ctx_pid(ctx))
     key, value = r.u32(), r.u32()
-    p.setdefault("reputation", {})[key] = value
+    rep = p.get("reputation")
+    if not isinstance(rep, dict):
+        rep = p["reputation"] = {}
+    rep[key] = value
     store.save()
+    if LOG is not None:
+        try:
+            LOG(f"RMC reputation: SetReputationPoints key={key} value={value}")
+        except Exception:                        # noqa: BLE001
+            pass
     return _reply(PROFILE, "SetReputationPoints_V1")
 
 
@@ -875,15 +918,22 @@ def h_vote(store, r, ctx):
     The vote is recorded through ``content_voting.apply_vote``, which keeps the
     counts, the voter list and the caller's own vote (VotingInfo f6) in step;
     the client then re-issues GetVoteCount/GetLastVoters by itself.
+
+    The id the client sends is the ``f2`` of the document it rendered, so it is
+    a *Vote id* (0 for the senate, 1001 for the World Council), not a store
+    slot.  It must be mapped to the slot: coercing every id to the first slot
+    put council votes on the senate (and they then read back as "not voted").
     """
-    election_id = r.u32() if r.remaining() >= 4 else 0
+    raw_id = r.u32() if r.remaining() >= 4 else 0
     faction = r.u32() if r.remaining() >= 4 else 0
     voting = store.state.setdefault("voting", {})
-    served = _election_id(store)
-    if election_id != served:
-        # one election in the store: a stale client document that sends another
-        # id must not put the vote where no panel will ever read it
-        election_id = served
+    elections = _elections(store)
+    by_id = {content_voting.vote_id(info): slot for slot, info in elections.items()}
+    election_id = by_id.get(raw_id)
+    if election_id is None:
+        # a stale client document that sends an id we do not serve must not put
+        # the vote where no panel will ever read it
+        election_id = _election_id(store)
     try:
         content_voting.apply_vote(voting, election_id, faction,
                                   voter=_ctx_pid(ctx))
@@ -891,19 +941,57 @@ def h_vote(store, r, ctx):
         # a faction outside the proven enum (0/1/2) is a client bug: never
         # corrupt the bars, never fail the call, just record no vote
         pass
+    else:
+        _credit_vote(store, faction, ctx)
     store.save()
     # Vote_V1's reply has NO body at all (the client skips parsing)
     return _reply(VOTING, "Vote_V1")
 
 
-def h_get_vote_count(store, r, ctx):
-    """``map<u32,u32>`` faction -> votes for the one election we serve.
+def _credit_vote(store, faction, ctx):
+    """Credit the career reputation a vote is worth (``VOTE_REWARD``).
 
-    The request's u32 (the client's election id) is ignored on purpose: the
-    store has exactly one election, whose ``Vote()`` id
-    ``elections_from_state`` forces to 0, so every call refers to it.
+    The client shows "+50" locally and ``Vote_V1`` has no reply body, so the
+    real service could only persist it through the profile -- which is where it
+    now lands, under the faction the player voted for.  ``worldEvent.reputation``
+    is kept equal for the same player so the world-event panel and the career
+    page can never disagree (they read different documents).
     """
-    counts = content_voting.vote_counts(store.state, _election_id(store))
+    if faction not in content_voting.FACTIONS:
+        return
+    pid = _ctx_pid(ctx)
+    p = store.player(pid)
+    rep = p.get("reputation")
+    if not isinstance(rep, dict):
+        rep = p["reputation"] = {}
+    rep[int(faction)] = int(rep.get(int(faction), 0)) + content_voting.VOTE_REWARD
+    we = _world_event_state(store)
+    wer = we.get("reputation")
+    if not isinstance(wer, dict):
+        wer = we["reputation"] = {}
+    try:
+        wer[pid] = int(wer.get(pid, 0) or 0) + content_voting.VOTE_REWARD
+    except (TypeError, ValueError):
+        wer[pid] = content_voting.VOTE_REWARD
+
+
+def _voting_slot_for(store, raw_id):
+    """Store slot for the Vote id the client just sent (0 when unknown)."""
+    for slot, info in _elections(store).items():
+        if content_voting.vote_id(info) == raw_id:
+            return slot
+    return _election_id(store)
+
+
+def h_get_vote_count(store, r, ctx):
+    """``map<u32,u32>`` faction -> votes, for the election the client asked for.
+
+    The request's u32 is the Vote id of the rendered document (the client polls
+    both the senate id 0 and the council id 1001 every few seconds), so it
+    selects the slot -- ignoring it made the council show the senate's bars.
+    """
+    raw_id = r.u32() if r.remaining() >= 4 else 0
+    counts = content_voting.vote_counts(store.state, _voting_slot_for(store, raw_id))
     return _reply(VOTING, "GetVoteCount_V1", counts=counts)
 
 
@@ -913,6 +1001,10 @@ def h_get_voting_stats(store, r, ctx):
     ``f1`` is the client's percentage denominator (``100*sum/f1``), so the
     content module guarantees ``f1 > 0`` and ``f1 >= sum`` -- a zero would
     paint ``INT_MIN`` % bars.
+
+    One row per election is returned (the senate row first); the client picks
+    the one it rendered.  The request's leading u32, when present, is the Vote
+    id, but the reply shape is a list either way, so filtering buys nothing.
     """
     entries = content_voting.voting_stats(store.state, _elections(store))
     return _reply(VOTING, "GetVotingStats_V1", entries=entries)
@@ -921,15 +1013,24 @@ def h_get_voting_stats(store, r, ctx):
 def h_get_last_voters(store, r, ctx):
     """``list<VoteEntry>``: String voter, u32 faction, u32 per entry.
 
-    Request is ``u32 limit, u32 offset``; recorded votes come back newest
-    first, and the content module fills the list from the counts when nobody
-    has voted yet so the panel is not blank.
+    The body is ``u32 limit, u32 offset`` in every frame we have captured; a
+    three-u32 body (id, limit, offset) is also accepted and selects the
+    election.  Recorded votes come back newest first, and the content module
+    fills the list from the counts when nobody has voted yet so the panel is
+    not blank.
     """
-    limit = r.u32() if r.remaining() >= 4 else 10
-    if r.remaining() >= 4:
+    raw_id = None
+    if r.remaining() >= 12:
+        raw_id = r.u32()
+        limit = r.u32()
         r.u32()                                   # offset (not needed)
+    else:
+        limit = r.u32() if r.remaining() >= 4 else 10
+        if r.remaining() >= 4:
+            r.u32()                               # offset (not needed)
     limit = min(max(0, limit), 64)
-    voters = content_voting.last_voters(store.state, _election_id(store), limit)
+    slot = _election_id(store) if raw_id is None else _voting_slot_for(store, raw_id)
+    voters = content_voting.last_voters(store.state, slot, limit)
     return _reply(VOTING, "GetLastVoters_V1", voters=voters)
 
 
@@ -988,12 +1089,17 @@ def _we_owner(record):
 
 
 def h_get_latest_world_event(store, r, ctx):
-    """The one live world event, as ``WorldEvent`` (bare, no count prefix).
+    """The world event of the day, as ``WorldEvent`` (bare, no count prefix).
 
-    ``content_events.latest_event`` carries the two traps: f5 is INVERTED
+    ``content_events.event_for_day`` advances the rotation first (one chapter
+    per UTC day, persisted in the store so a restart mid-day keeps the same
+    event), then ``latest_event`` carries the two wire traps: f5 is INVERTED
     (running -> False) and f4 is a bit-packed ``Date``, not epoch seconds.
     """
-    event = content_events.latest_event(event=_world_event_state(store))
+    we = _world_event_state(store)
+    if content_events.event_for_day(we):
+        store.save()
+    event = content_events.latest_event(event=we)
     return _reply(WORLD, "GetLatestWorldEvent_V1", event=event)
 
 
@@ -1311,6 +1417,8 @@ _WRITER_SHORT_NAMES = frozenset((
     "UploadVoteMultipliers_V1",
     # world events
     "Register_V1", "Unregister_V1", "CompleteMission_V1", "SetVisited_V1",
+    # GetLatestWorldEvent_V1 persists the day rotation
+    "GetLatestWorldEvent_V1",
     "ClearWorldEventTemplates_V1", "UploadWorldEventTemplate_V1",
 ))
 

@@ -2,9 +2,9 @@
 rem =====================================================================
 rem  PLAY.bat - the one thing to double-click.
 rem
-rem  Starts the local Anno 2070 online server, launches the game, and
-rem  restarts the game up to 3 times if it dies during its online
-rem  bootstrap (a known client-side crash, roughly 1 run in 3).
+rem  Starts the local Anno 2070 online server, then starts the game ONCE.
+rem  If the client drops its own login during bootstrap (a race inside the
+rem  game, it no longer crashes) this says so and stops - just run it again.
 rem
 rem  Reads everything from config.ini next to this file.
 rem =====================================================================
@@ -86,10 +86,25 @@ echo =====================================================================
 echo  Anno 2070 - Local Online
 echo  player: !PNAME!   game: !GAMEDIR!
 echo =====================================================================
-echo [1/5] clearing stale processes
-taskkill /f /im Anno5.exe >nul 2>&1
-taskkill /f /im python.exe >nul 2>&1
-call :sleep 3
+echo [1/5] checking for leftovers
+rem Never force-close the game: a hard kill can truncate Config\Engine.ini and
+rem then every later launch fails. Ask the player instead.
+tasklist /nh /fo csv /fi "imagename eq Anno5.exe" 2>nul | findstr /b /i "\"Anno5.exe\"" >nul
+if not errorlevel 1 (
+  echo       Anno 2070 is already running.
+  echo       Quit it from the game's own menu ^(not Task Manager^) and run
+  echo       PLAY.bat again.
+  goto :end
+)
+rem A leftover server would own the port and keep its own copy of the state.
+rem Only that process is stopped - never every python.exe on the machine.
+set "HOLDER=0"
+for /f "tokens=5" %%p in ('netstat -ano ^| findstr ":!HPORT! " ^| findstr LISTENING') do set "HOLDER=%%p"
+if not "!HOLDER!"=="0" (
+  echo       a local server is still on port !HPORT! ^(PID !HOLDER!^) - stopping it
+  taskkill /f /pid !HOLDER! >nul 2>&1
+  call :sleep 2
+)
 
 echo [2/5] making sure the loader is in place
 if not exist "!GAMEDIR!\upc_r2_loader64.dll" (
@@ -105,7 +120,10 @@ if not exist "!GAMEDIR!\upc_r2_loader64.dll" (
 echo [3/5] starting the local server
 if not exist "!LOGDIR!" mkdir "!LOGDIR!"
 if exist "!LOGDIR!\server.log" move /y "!LOGDIR!\server.log" "!LOGDIR!\server.prev.log" >nul 2>&1
-start "Anno 2070 Local Server" /min "!PY!" "!HERE!server\mimic_server.py" --config "%CFG%" --log-dir "!HERE!!LOGDIR!"
+rem the state file is named explicitly: it must be the same file on every
+rem launch (a vote that "forgets itself" is almost always a different path)
+start "Anno 2070 Local Server" /min "!PY!" "!HERE!server\mimic_server.py" --config "%CFG%" --state-file "!HERE!server\state.json" --log-dir "!HERE!!LOGDIR!"
+echo       state: !HERE!server\state.json
 
 echo [4/5] waiting for the server on port !HPORT!
 set /a tries=0
@@ -121,23 +139,39 @@ goto :launch
 echo       server is up.
 
 :launch
-set /a attempt=1
-:trygame
-echo [5/5] starting Anno 2070 (attempt !attempt! of 3)
+echo [5/5] starting Anno 2070
 cd /d "!GAMEDIR!"
 set UPC_CONQUEST_SUPPRESS_MS=0
 start "" Anno5.exe
 cd /d "!HERE!"
-call :sleep 100
-tasklist /fi "imagename eq Anno5.exe" | findstr /i "Anno5.exe" >nul
-if not errorlevel 1 goto :up
+echo       waiting for the game to finish its online bootstrap
+call :sleep 8
+tasklist /nh /fo csv /fi "imagename eq Anno5.exe" 2>nul | findstr /b /i "\"Anno5.exe\"" >nul
+if errorlevel 1 (
+  echo.
+  echo       The game did not start: no Anno5.exe is running.
+  echo       Check that "!GAMEDIR!" really contains Anno5.exe, or set
+  echo       [game] path in config.ini and run PLAY.bat again.
+  goto :end
+)
+set /a waited=8
+:watch
+call :sleep 2
+set /a waited+=2
+tasklist /nh /fo csv /fi "imagename eq Anno5.exe" 2>nul | findstr /b /i "\"Anno5.exe\"" >nul
+if errorlevel 1 goto :gone
+if !waited! lss 100 goto :watch
+goto :up
+
+:gone
 echo.
-echo       The game closed during its online bootstrap. This is the known
-echo       client-side crash (about 1 run in 3), not a server problem.
-set /a attempt+=1
-if !attempt! leq 3 goto :trygame
-echo       Three attempts failed. Run PROGRESS.bat to see what the server did,
-echo       and read docs\known-issues.md.
+echo       The game closed during its online bootstrap.
+echo       That is a race inside the game's own client ^(it cancels its own
+echo       login^), not a server problem, and PLAY.bat does not retry any
+echo       more. Run it again - it normally comes up on the first or second try.
+echo       What the server did last is printed below.
+echo.
+call "!HERE!PROGRESS.bat" nopause
 goto :end
 
 :up
@@ -147,6 +181,7 @@ echo       Close Anno 2070 from its own menu when you are done, then close
 echo       the "Anno 2070 Local Server" window.
 echo.
 call "!HERE!PROGRESS.bat" nopause
+goto :end
 
 
 :cfg

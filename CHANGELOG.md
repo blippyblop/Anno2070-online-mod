@@ -2,6 +2,56 @@
 
 ## Unreleased
 
+Fixed
+- **Player name showed as `Player` + boxes.** The Quazal `String` writer omitted
+  its NUL terminator and counted the length without it, while the game's own
+  writer (`FUN_141370f90`) writes `u16 (strlen + 1)` and then the bytes + NUL
+  and its reader allocates `len + 1` and copies `len` bytes. The client's last
+  byte was therefore uninitialised heap memory; it widened into replacement
+  glyphs. `rv_shapes.qstr` and the two hand-rolled copies on the login/register
+  path now emit the terminator. Every test oracle that mirrored the old
+  convention was corrected (that mirror is why 4881 checks passed while the
+  bug shipped).
+- **Votes were forgotten after a restart.** A World Council vote sends Vote id
+  `1001`, but the handler coerced every id onto the senate slot (`0`) and
+  `elections_from_state` only restored the own-vote field for slot 0 - so the
+  council came back "not voted" while the senate claimed the vote. Ids are now
+  mapped to their slot, `GetVoteCount_V1` honours the id the client polls, and
+  both slots are restored.
+- **Career points went nowhere.** `Vote_V1` credits `VOTE_REWARD` (50) to
+  `players.<pid>.reputation` and mirrors it into `worldEvent.reputation`, so
+  `GetReputationPoints_V1` (which every login reads) returns it and the career
+  page shows it after a restart. `AreReputationPointsMissing_V1` now answers per
+  key instead of "missing" forever.
+- **`SetReputationPoints_V1` silently dropped writes** on a state file that
+  stored `reputation` as a list (`IndexError`, swallowed by the reply path, so
+  the client believed it saved). Migration now coerces it to a map, and the
+  handler cannot raise.
+- **The world event never changed.** It was one constant (chapter id `0`, no day
+  boundary - and `0` is not even a real chapter). It now rotates over the five
+  chapter GUIDs the client actually ships (Atomic Terror, The Eden Project,
+  Global Distrust, The Nordamark Border Conflict, The Secret of the Ebashi
+  Trench), one per UTC day, persisted as a day key so a restart mid-day keeps
+  today's event. `RV_WORLD_EVENT_PERIOD_DAYS`-style pinning is
+  `period_days=0` for A/B runs.
+
+Changed
+- **PLAY.bat launches the game once.** The 3-attempt retry loop is gone: a
+  launch that exits is reported (with PROGRESS) instead of being retried, and a
+  dead launch is detected in seconds instead of after a fixed 100 s wait.
+- **PLAY.bat no longer force-closes the game** (that can truncate
+  `Config\Engine.ini`): if Anno 2070 is running it asks you to quit from the
+  game's menu. It also no longer kills every `python.exe` on the machine - only
+  the process holding the server port.
+- **PLAY.bat names the state file explicitly** (`--state-file`) and prints it,
+  so a launch can never use a different file. `mimic_server` accepts
+  `--state-file` as an alias of `--data-file`, and adopts an older
+  `data/mimic_state.json` instead of starting empty.
+- PLAY.bat / PROGRESS.bat: the summary is no longer skipped (`goto :end`), so the
+  window stays open and the report is readable.
+
+## Unreleased (uninstaller, same release)
+
 Added
 - **Uninstaller.** `UNINSTALL.bat` for the PLAY.bat package and
   `Uninstall-Anno2070Online.exe` for the .exe build (also a Start Menu entry).

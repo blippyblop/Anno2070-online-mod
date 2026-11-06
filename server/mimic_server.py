@@ -29,6 +29,7 @@ import hashlib
 import json
 import os
 import select
+import shutil
 import socket
 import struct
 import sys
@@ -869,12 +870,12 @@ def rv_method_payload(proto, method, params=b""):
     elif short in ("LoginWithToken_V1", "LoginWithS2SToken_V1"):
         out += bytes.fromhex("000000000000000000000000000000aa")   # GUID
         txt = PLAYER_NAME.encode("ascii", "replace")[:32]
-        out += struct.pack("<H", len(txt)) + txt                    # Quazal String
+        out += struct.pack("<H", len(txt) + 1) + txt + b"\x00"      # String (count incl NUL)
         out += b"\x01"                                             # bool
     elif short == "Register_V1":
         out += struct.pack("<I", 1)                                 # u32
         txt = PLAYER_NAME.encode("ascii", "replace")[:32]
-        out += struct.pack("<H", len(txt)) + txt                    # String
+        out += struct.pack("<H", len(txt) + 1) + txt + b"\x00"      # String (count incl NUL)
     elif short in ("RedirectLogin_V1", "RenewWithTicket_V1"):
         pass                                                          # no fields
     # PN 137: BackEndServiceProtocol field sets, decoded from the client's
@@ -2320,6 +2321,8 @@ def _apply_config(ap, args):
         args.log_dir = _get("server", "log_dir") or args.log_dir
     if args.log_dir and not os.path.isabs(args.log_dir):
         args.log_dir = os.path.normpath(os.path.join(HERE_DIR, "..", args.log_dir))
+    if "state_file" in given:
+        given.add("data_file")            # --state-file is an alias
     if "data_file" not in given:
         args.data_file = _get("server", "state_file") or args.data_file
     # Resolve the state file against the PACKAGE folder, never the process CWD:
@@ -2340,6 +2343,43 @@ def _apply_config(ap, args):
           f"ports = http {args.http} / conquest {args.conquest} / "
           f"prudp {args.prudp_tcp} / udp {args.udp}, "
           f"file = {path or '<built-in defaults>'}")
+
+
+def _adopt_legacy_state(path):
+    """Take over an older state file instead of silently starting empty.
+
+    The state path was resolved against the process working directory in older
+    builds, so a player's ARK items and votes can sit in
+    ``<package>/data/mimic_state.json`` or ``<game>/data/mimic_state.json``
+    while the server now writes ``<package>/server/state.json``. Starting fresh
+    there looks exactly like "it forgot my vote". If the new file does not
+    exist yet, copy the first legacy file found; never overwrite anything.
+    """
+    try:
+        if not path or os.path.exists(path):
+            return path
+        pkg = os.path.dirname(HERE_DIR)
+        candidates = [
+            os.path.join(pkg, "data", "mimic_state.json"),
+            os.path.join(pkg, "server", "data", "mimic_state.json"),
+            os.path.join(pkg, os.pardir, "data", "mimic_state.json"),
+        ]
+        for old in candidates:
+            old = os.path.normpath(old)
+            if os.path.abspath(old) == os.path.abspath(path):
+                continue
+            if os.path.isfile(old):
+                os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+                shutil.copy2(old, path)
+                note = "[store] adopted the older state file %s" % old
+                try:
+                    log(note)
+                except Exception:                # noqa: BLE001
+                    print(note, flush=True)
+                return path
+    except OSError:
+        pass
+    return path
 
 
 def main():
@@ -2400,10 +2440,11 @@ def main():
                     default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs"))
     ap.add_argument("--params-empty", action="store_true",
                     help="answer app-parameters with {} (old behaviour)")
-    ap.add_argument("--data-file",
+    ap.add_argument("--data-file", "--state-file", dest="data_file",
                     default=os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                          "data", "mimic_state.json"),
-                    help="persistent game state JSON (players/ark items/votes)")
+                    help="persistent game state JSON (players/ark items/votes); "
+                         "--state-file is the same option")
     ap.add_argument("--no-ws", action="store_true")
     # ---- packaging (v0.1): config file + the player's display name --------
     ap.add_argument("--config", default=None,
@@ -2416,7 +2457,7 @@ def main():
     SESSION_TMPL["nameOnPlatform"] = PLAYER_NAME
     CAP = Capture(ARGS.log_dir)
     sys.stdout = Tee(sys.stdout, os.path.join(ARGS.log_dir, "server.log"))
-    _store = rmc_services.open_store(ARGS.data_file)
+    _store = rmc_services.open_store(_adopt_legacy_state(ARGS.data_file))
     if hasattr(rmc_services, "set_sandbox_name"):
         rmc_services.set_sandbox_name(ARGS.sandbox_name)
     RESPONDER = rmc_services.RmcResponder(_store, log)

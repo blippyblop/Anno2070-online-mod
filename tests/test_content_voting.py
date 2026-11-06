@@ -587,7 +587,8 @@ def test_wire_decode():
     for i in range(n):
         slen = struct.unpack_from("<H", buf, off)[0]
         off += 2
-        name = buf[off:off + slen].decode("ascii")
+        # engine String: the count includes the NUL and the last byte is it
+        name = buf[off:off + slen][:-1].decode("ascii")
         off += slen
         a, b = struct.unpack_from("<II", buf, off)
         off += 8

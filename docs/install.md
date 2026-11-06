@@ -41,8 +41,9 @@ No Python is required.
    If the game folder is protected, run it as administrator.
 
 3. **Run `PLAY.bat`.** It starts the server in a minimised console window,
-   waits for the port, starts the game, and retries up to three times if the
-   client dies during its online bootstrap.
+   waits for the port, starts the game once, and tells you if the client
+   dropped its online login during bootstrap (run it again - it normally comes
+   up on the first or second try).
 
 4. Play. When you finish, quit from the game's own menu, then close the
    "Anno 2070 Local Server" window.

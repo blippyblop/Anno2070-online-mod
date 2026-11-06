@@ -445,10 +445,10 @@ eq(body(profile.build(PROTO, "GetReputationPoints_V1"), "GetReputationPoints_V1"
 fb = body(profile.build(PROTO, "GetFacebookAccount_V1",
                         account_id=0x1122334455667788, name="bob"),
           "GetFacebookAccount_V1")
-eq(fb, struct.pack("<Q", 0x1122334455667788) + b"\x03\x00bob",
+eq(fb, struct.pack("<Q", 0x1122334455667788) + b"\x04\x00bob\x00",
    "GetFacebookAccount_V1 = u64 + String")
 eq(len(body(profile.build(PROTO, "GetFacebookAccount_V1"), "GetFacebookAccount_V1")),
-   10, "GetFacebookAccount_V1 empty = 8 bytes + u16 0")
+   11, "GetFacebookAccount_V1 empty = 8 bytes + u16 1 + NUL")
 
 uk = body(profile.build(PROTO, "ActivateUniqueKey_V1", keys=[1, 2, 3]),
           "ActivateUniqueKey_V1")
@@ -463,9 +463,9 @@ eq(body(profile.build(PROTO, "ListShopItems_V1"), "ListShopItems_V1"), b"\x00" *
 
 ai = body(profile.build(PROTO, "GetAccountInfo_V1", name="a", account="bc"),
           "GetAccountInfo_V1")
-eq(ai, b"\x01\x00a" + b"\x02\x00bc", "GetAccountInfo_V1 = String + String")
-eq(body(profile.build(PROTO, "GetAccountInfo_V1"), "GetAccountInfo_V1"), b"\x00" * 4,
-   "GetAccountInfo_V1 empty = two empty Strings")
+eq(ai, b"\x02\x00a\x00" + b"\x03\x00bc\x00", "GetAccountInfo_V1 = String + String")
+eq(body(profile.build(PROTO, "GetAccountInfo_V1"), "GetAccountInfo_V1"),
+   b"\x01\x00\x00" * 2, "GetAccountInfo_V1 empty = two empty Strings")
 
 ag = body(profile.build(PROTO, "FetchAssetCounterGraph_V1", pairs={1: 2}, suffix=9),
           "FetchAssetCounterGraph_V1")
@@ -482,25 +482,26 @@ eq(len(lt), 4 + 34, "one LeaderboardTemplate = 32 + 2 bytes")
 
 pp = body(profile.build(PROTO, "GetPlayerProfile_V1", name="n", values=[1, 2, 3],
                         list_a=[9], list_b=[], tail="t"), "GetPlayerProfile_V1")
-eq(pp, b"\x01\x00n" + struct.pack("<IIIII", 1, 2, 3, 0, 0)
-   + struct.pack("<II", 1, 9) + struct.pack("<I", 0) + b"\x01\x00t",
+eq(pp, b"\x02\x00n\x00" + struct.pack("<IIIII", 1, 2, 3, 0, 0)
+   + struct.pack("<II", 1, 9) + struct.pack("<I", 0) + b"\x02\x00t\x00",
    "GetPlayerProfile_V1 = String + 5 x u32 + 2 x list<u32> + String")
-eq(len(pp), 3 + 20 + 8 + 4 + 3, "GetPlayerProfile_V1 layout is 38 bytes here")
-eq(len(body(profile.build(PROTO, "GetPlayerProfile_V1"), "GetPlayerProfile_V1")), 32,
-   "GetPlayerProfile_V1 empty = 2 + 20 + 4 + 4 + 2 bytes")
+eq(len(pp), 4 + 20 + 8 + 4 + 4, "GetPlayerProfile_V1 layout is 40 bytes here")
+eq(len(body(profile.build(PROTO, "GetPlayerProfile_V1"), "GetPlayerProfile_V1")), 34,
+   "GetPlayerProfile_V1 empty = 3 + 20 + 4 + 4 + 3 bytes")
 
 cp = body(profile.build(PROTO, "CreatePlayerProfile_V1", msg="E", kind=5,
                         profile={"name": "n", "values": [1], "list_a": [2],
                                  "list_b": [], "tail": "t"},
                         mails={4: True}), "CreatePlayerProfile_V1")
-want = (b"\x01\x00E" + struct.pack("<H", 5)
-        + b"\x01\x00n" + struct.pack("<IIIII", 1, 0, 0, 0, 0)
-        + struct.pack("<II", 1, 2) + struct.pack("<I", 0) + b"\x01\x00t"
+want = (b"\x02\x00E\x00" + struct.pack("<H", 5)
+        + b"\x02\x00n\x00" + struct.pack("<IIIII", 1, 0, 0, 0, 0)
+        + struct.pack("<II", 1, 2) + struct.pack("<I", 0) + b"\x02\x00t\x00"
         + struct.pack("<I", 1) + struct.pack("<I", 4) + b"\x01")
 eq(cp, want, "CreatePlayerProfile_V1 = Result + PlayerProfile + map<u32,u8>")
 eq(body(profile.build(PROTO, "CreatePlayerProfile_V1", msg="", kind=0,
                       profile=None), "CreatePlayerProfile_V1"),
-   b"\x00\x00\x00\x00" + b"\x00" * 32 + b"\x00\x00\x00\x00",
+   b"\x01\x00\x00" + b"\x00\x00" + b"\x01\x00\x00" + b"\x00" * 20
+   + b"\x00" * 8 + b"\x01\x00\x00" + b"\x00\x00\x00\x00",
    "CreatePlayerProfile_V1 defaults = empty Result + empty profile + empty map")
 # flat keyword spelling agrees with the dict spelling
 eq(body(profile.build(PROTO, "CreatePlayerProfile_V1", msg="E", kind=5, name="n",
@@ -512,19 +513,23 @@ eq(body(profile.build(PROTO, "CreatePlayerProfile_V1", msg="E", kind=5, name="n"
 eq(profile.u32_list([1, 2]), struct.pack("<III", 2, 1, 2), "u32_list = count + N x u32")
 eq(profile.u32_list(b"\x01\x00\x00\x00\x02\x00\x00\x00"),
    struct.pack("<III", 2, 1, 2), "u32_list accepts a byte blob")
-eq(profile.result_value("x", 7), b"\x01\x00x" + struct.pack("<H", 7),
+eq(profile.result_value("x", 7), b"\x02\x00x\x00" + struct.pack("<H", 7),
    "result_value = String + u16")
-eq(profile.qstr_field(None), b"\x00\x00", "qstr_field(None) = empty String")
-eq(profile.account_info(), b"\x00\x00\x00\x00", "account_info empty")
+eq(profile.qstr_field(None), b"\x01\x00\x00", "qstr_field(None) = empty String")
+eq(profile.account_info(), b"\x01\x00\x00" * 2, "account_info empty")
 eq(profile.shop_items(), b"\x00" * 8, "shop_items empty")
 eq(profile.unique_key(), b"\x00\x00\x00\x00", "unique_key empty")
-eq(profile.facebook_account(), b"\x00" * 10, "facebook_account empty")
+eq(profile.facebook_account(), b"\x00" * 8 + b"\x01\x00\x00",
+   "facebook_account empty")
 eq(profile.asset_counter_graph(), b"\x00" * 8, "asset_counter_graph empty")
 eq(profile.reputation_points(), b"\x00\x00\x00\x00", "reputation_points empty")
 eq(profile.world_stats(), b"\x00" * 8, "world_stats empty")
-eq(profile.player_profile(), b"\x00" * 32, "player_profile empty (0x60-byte object)")
+eq(profile.player_profile(), b"\x01\x00\x00" + b"\x00" * 20 + b"\x00" * 8
+   + b"\x01\x00\x00", "player_profile empty (0x60-byte object)")
 eq(profile.leaderboard_templates(), b"\x00\x00\x00\x00", "leaderboard_templates empty")
-eq(profile.create_player_profile(), b"\x00" * 40, "create_player_profile empty")
+eq(profile.create_player_profile(), b"\x01\x00\x00\x00\x00" + b"\x01\x00\x00"
+   + b"\x00" * 20 + b"\x00" * 8 + b"\x01\x00\x00" + b"\x00\x00\x00\x00",
+   "create_player_profile empty")
 
 # ---------------------------------------------------------------------------
 # 5. totality on junk input
@@ -622,7 +627,7 @@ eq(name_block(PROTO, "SetArk_V1")[:2], struct.pack("<H", len(nb("SetArk_V1")) - 
    "name_block u16 length includes NUL")
 eq(u32(1), b"\x01\x00\x00\x00", "u32 is little-endian")
 eq(u64(1), b"\x01" + b"\x00" * 7, "u64 is little-endian")
-eq(qstr("ab"), b"\x02\x00ab", "qstr excludes the NUL")
+eq(qstr("ab"), b"\x03\x00ab\x00", "qstr includes the NUL (engine convention)")
 eq(u8(255), b"\xff", "u8")
 eq(u16(1), b"\x01\x00", "u16 is little-endian")
 

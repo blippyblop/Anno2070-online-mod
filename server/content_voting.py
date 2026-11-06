@@ -91,6 +91,13 @@ FACTION_NAMES = {
     FACTION_TECH: "Tech",
 }
 
+#: Reputation a single senate / World Council vote is worth.
+#: The client itself says "+50" when you vote (it is a local message -- Vote_V1
+#: returns no body at all, so nothing on the wire carries it).  The real
+#: service credited it to the player's career through the profile, which is why
+#: it now lands in ``players.<pid>.reputation`` here and survives a restart.
+VOTE_REWARD = 50
+
 #: the election document fields, in wire order (see the module table above)
 FIELDS = ("id", "f2", "f3", "running", "start", "f6",
           "votesA", "votesB", "f9", "f10")
@@ -404,8 +411,8 @@ def vote_id(info):
         return 0
 
 
-def elections_from_state(state=None, now=None, key=0):
-    """Build the election map (keyed ``key``, 0 by default) from a store state.
+def elections_from_state(state=None, now=None, key=None):
+    """Build the election map from a store state.
 
     Glue for ``rmc_services.h_get_voting_infos``: ``state`` may be the whole
     store state or its ``voting`` sub-dict.  Only the two values that are
@@ -413,20 +420,28 @@ def elections_from_state(state=None, now=None, key=0):
     (spec ``f5``) and the "running" bool -- and the three dates are rebuilt
     around ``now`` so a legacy state file that still stores epoch seconds
     cannot hit the "year 26, hour 24" trap.  The map key and the id ``Vote()``
-    sends back are both forced to ``key`` (spec trap #3).
+    sends back are both forced to the slot key (spec trap #3).
+
+    ``key`` used to select a single slot; it now only exists for callers that
+    want one slot back (``key=0`` -> ``{0: ...}``).  Every slot is restored --
+    restoring only slot 0 is why a World Council vote came back as "not voted"
+    after a restart (the council is slot 1, Vote() id 1001).
     """
     elections = default_elections(now)
-    election = elections.setdefault(int(key), default_election(now, key=key))
+    if key is not None:
+        elections = {int(key): elections[int(key)]} if int(key) in elections \
+            else {int(key): default_election(now, key=int(key))}
     st = _voting_state(state) or {}
-    record = None
     infos = st.get("infos")
-    if isinstance(infos, dict):
-        record = _lookup(infos, key)
-    if not isinstance(record, dict):
-        legacy = st.get("votingInfo")
-        if isinstance(legacy, dict):
+    legacy = st.get("votingInfo")
+    for slot, election in elections.items():
+        record = None
+        if isinstance(infos, dict):
+            record = _lookup(infos, slot)
+        if not isinstance(record, dict) and isinstance(legacy, dict) and slot == 0:
             record = legacy
-    if isinstance(record, dict):
+        if not isinstance(record, dict):
+            continue
         try:
             own = int(record.get("f6", FACTION_INVALID))
         except (TypeError, ValueError):

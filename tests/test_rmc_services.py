@@ -122,9 +122,10 @@ class Cur:
         return self.u8() != 0
 
     def string(self):
+        # engine String: u16 count INCLUDES the NUL, and the last byte is it
         n = self.u16()
         raw = self.take(n)
-        return raw.decode("ascii", "replace")
+        return raw[:-1].rstrip(b"\x00").decode("ascii", "replace")
 
     def rest(self):
         raw = self.d[self.o:]

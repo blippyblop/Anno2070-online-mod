@@ -50,8 +50,8 @@ launcher does not yet behave like PLAY.bat - use this zip until that is fixed.
 
 The installer puts a small loader DLL next to `Anno5.exe`, unpacks the runtime to
 `%LOCALAPPDATA%\Anno2070Online`, and writes a `config.ini` you can edit (player
-name, ports, options). The launcher starts the local server, launches the game,
-retries the known 1-in-3 bootstrap crash, and prints a summary when you quit
+name, ports, options). The launcher starts the local server, launches the game **once**, and prints
+a summary when you quit
 (`Anno2070Online.exe --status` re-prints it).
 
 The game's own files are **not modified**: the loader DLL applies everything at
@@ -98,7 +98,7 @@ server/               the backend: SDK HTTP, notification websocket, RV/RMC (83 
                       PRUDP framing, conquest HTTP
 loader/               our own upc_r2 client DLL (C source + prebuilt) - replaces the
                       Ubisoft DLL the game imports
-docs/                 install, how it works, known issues, full protocol notes
+docs/                 install, how it works, known issues, world events, protocol notes
 tests/                offline suites, no game needed (tests/run_all.sh)
 .github/workflows/    CI: build + attach the exe set to a release on every v* tag
 ```
@@ -125,8 +125,8 @@ Details: `docs/how-it-works.md`. Protocol archaeology: `docs/protocol-notes.md`.
 
 # Known issues
 
-* About **1 launch in 3** hits a crash inside the game's own websocket code; the
-  launcher retries automatically.
+* Some launches end at the menu in **offline mode** - a race inside the game's
+own client (it no longer crashes). PLAY.bat does **not** retry: run it again.
 * **Multiplayer/conquest** cannot be reached yet - the client only reads its
   conquest address from a document it never populates from server data.
 * Never end the game with Task Manager: it can truncate `Config\Engine.ini`.

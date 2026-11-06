@@ -76,8 +76,9 @@ def ref_name_block(proto, method):
 
 
 def ref_qstr(text):
+    # engine String: u16 (strlen + 1), then the bytes and the NUL
     raw = text.encode("ascii") if isinstance(text, str) else bytes(text)
-    return struct.pack("<H", len(raw)) + raw
+    return struct.pack("<H", len(raw) + 1) + raw + b"\x00"
 
 
 def ref_blob(data):
@@ -189,24 +190,27 @@ for m, tail in (("Login", "build-name"), ("LoginEx", "return-message")):
     check("%s: ticket bytes verbatim at +%d" % (m, off),
           payload[off:off + len(TICKET)] == TICKET)
     off += len(TICKET)
-    check("%s: RVConnectionData url is a String (u16 EXCL NUL)" % m,
-          struct.unpack_from("<H", payload, off)[0] == len(URL),
+    check("%s: RVConnectionData url is a String (u16 INCL NUL)" % m,
+          struct.unpack_from("<H", payload, off)[0] == len(URL) + 1,
           "%d" % struct.unpack_from("<H", payload, off)[0])
     off += 2
-    check("%s: url bytes have no NUL terminator" % m,
-          payload[off:off + len(URL)] == URL.encode("ascii"))
-    off += len(URL)
+    check("%s: url bytes are NUL-terminated" % m,
+          payload[off:off + len(URL)] == URL.encode("ascii")
+          and payload[off + len(URL)] == 0)
+    off += len(URL) + 1
     check("%s: special-protocol u32 == 0" % m,
           struct.unpack_from("<I", payload, off)[0] == 0)
     off += 4
-    check("%s: empty special-protocol String (u16 0)" % m,
-          struct.unpack_from("<H", payload, off)[0] == 0)
-    off += 2
+    check("%s: empty special-protocol String (u16 1 + NUL)" % m,
+          struct.unpack_from("<H", payload, off)[0] == 1
+          and payload[off + 2] == 0)
+    off += 3
     check("%s: tail String length" % m,
-          struct.unpack_from("<H", payload, off)[0] == len(tail))
+          struct.unpack_from("<H", payload, off)[0] == len(tail) + 1)
     off += 2
-    check("%s: tail bytes" % m, payload[off:off + len(tail)] == tail.encode())
-    off += len(tail)
+    check("%s: tail bytes" % m, payload[off:off + len(tail)] == tail.encode()
+          and payload[off + len(tail)] == 0)
+    off += len(tail) + 1
     check("%s: no trailing bytes (total %d)" % (m, off), off == len(payload),
           "%d vs %d" % (off, len(payload)))
 
@@ -277,7 +281,7 @@ check("secure_url carries stream=3 and type=2",
 check("secure_url carries CID=1;PID=2", "CID=1;PID=2" in url, url)
 check("connection_data = String + u32 0 + empty String",
       A.connection_data("X") == ref_qstr("X") + struct.pack("<I", 0)
-      + struct.pack("<H", 0))
+      + struct.pack("<H", 1) + b"\x00")
 
 # --------------------------------------------------------------------------
 # 6. beta checks: totality, purity, dispatch

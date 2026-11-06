@@ -110,10 +110,15 @@ class Reader(object):
     def bool(self):
         return self.take(1) != b"\x00"
 
-    # FUN_141371620 -- u16 length EXCLUDING the NUL, then the bytes
+    # FUN_141371620 -- u16 length INCLUDING the NUL, then the bytes.  The
+    # object is sized to len + 1 and len bytes are copied, so the last byte is
+    # the terminator: drop it when decoding.
     def string(self):
         n = struct.unpack("<H", self.take(2))[0]
-        return self.take(n).decode("ascii")
+        if n == 0:
+            return ""
+        raw = self.take(n)
+        return raw[:-1].rstrip(b"\x00").decode("ascii")
 
     # FUN_140DE9460 -- u32 count + ascending (u32,u32)
     def map32(self):
@@ -463,19 +468,19 @@ def test_values():
 
 def test_conventions():
     print("\n-- test_conventions")
-    # u16 length EXCLUDING the NUL: an empty string is 00 00, not 01 00
-    eq(matchmaking.string_list([""]), w32(1) + w16(0),
-       "empty string encodes as u16 0 (length EXCLUDES the NUL)")
-    eq(matchmaking.string_list(["ab"]), w32(1) + w16(2) + b"ab",
-       "two-char string encodes as u16 2 + 2 bytes")
+    # u16 length INCLUDING the NUL (engine writer FUN_141370f90)
+    eq(matchmaking.string_list([""]), w32(1) + w16(1) + b"\x00",
+       "empty string encodes as u16 1 + the NUL")
+    eq(matchmaking.string_list(["ab"]), w32(1) + w16(3) + b"ab\x00",
+       "two-char string encodes as u16 3 + 2 bytes + NUL")
     eq(matchmaking.string_list([]), w32(0), "empty list is a bare zero count")
     eq(matchmaking.string_list(None), w32(0), "None list is a bare zero count")
     eq(matchmaking.map_u32_u32({}), w32(0), "empty map is a bare zero count")
     eq(matchmaking.map_u32_u32({2: 3}), w32(1) + w32(2) + w32(3),
        "map entry is key then value")
-    eq(matchmaking.variant(), w16(0) + w16(0x15),
+    eq(matchmaking.variant(), w16(1) + b"\x00" + w16(0x15),
        "default Variant is empty String then tag 0x15")
-    eq(matchmaking.variant("x", 1), w16(1) + b"x" + w16(1),
+    eq(matchmaking.variant("x", 1), w16(2) + b"x\x00" + w16(1),
        "Variant is text FIRST, tag SECOND")
 
 

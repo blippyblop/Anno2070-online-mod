@@ -86,9 +86,13 @@ def nb(proto, method):
 
 
 def qs(text):
-    """Quazal String: u16 len EXCL NUL + bytes, no NUL on the wire."""
+    """Quazal String: u16 len INCLUDING the NUL, then bytes + NUL.
+
+    The engine's writer FUN_141370f90 emits (strlen + 1) and a terminator; the
+    reader sizes the object to len + 1 and copies len bytes, so the last byte
+    must be the 0."""
     b = text.encode("ascii")
-    return struct.pack("<H", len(b)) + b
+    return struct.pack("<H", len(b) + 1) + b + b"\x00"
 
 
 def guid_bytes(data1, data2, data3, data4):
@@ -176,22 +180,24 @@ for m in METHODS:
 print("== field offsets / widths / endianness ==")
 n = body_off("LoginWithToken_V1")
 p = L.login_with_token()
-check("LoginWithToken total length", len(p) == n + 16 + 2 + 6 + 1,
+check("LoginWithToken total length", len(p) == n + 16 + 2 + 7 + 1,
       "%d B" % len(p))
 check_bytes("LoginWithToken GUID at +%d" % n, p[n:n + 16], GUID_DEF)
-check("LoginWithToken String length at +%d == 6 (EXCL NUL)" % (n + 16),
-      struct.unpack_from("<H", p, n + 16)[0] == 6,
+check("LoginWithToken String length at +%d == 7 (INCL NUL)" % (n + 16),
+      struct.unpack_from("<H", p, n + 16)[0] == 7,
       "%d" % struct.unpack_from("<H", p, n + 16)[0])
 check_bytes("LoginWithToken name field at +%d" % (n + 18), p[n + 18:n + 24], b"Player")
-check("LoginWithToken bool at +%d == 1" % (n + 24), p[n + 24] == 0x01,
-      "0x%02x" % p[n + 24])
-check("LoginWithToken has no NUL after the String", p[-2:] == b"r\x01", p[-2:].hex())
+check("LoginWithToken name is NUL-terminated", p[n + 24] == 0x00, "0x%02x" % p[n + 24])
+check("LoginWithToken bool at +%d == 1" % (n + 25), p[n + 25] == 0x01,
+      "0x%02x" % p[n + 25])
+check("LoginWithToken ends with the terminator then the bool", p[-2:] == b"\x00\x01",
+      p[-3:].hex())
 
 n2 = body_off("LoginWithS2SToken_V1")
 p2 = L.login_with_s2s_token()
-check("LoginWithS2SToken total length", len(p2) == n2 + 16 + 2 + 6 + 1)
+check("LoginWithS2SToken total length", len(p2) == n2 + 16 + 2 + 7 + 1)
 check_bytes("LoginWithS2SToken GUID at +%d" % n2, p2[n2:n2 + 16], GUID_DEF)
-check("LoginWithS2SToken String length == 6", struct.unpack_from("<H", p2, n2 + 16)[0] == 6)
+check("LoginWithS2SToken String length == 7", struct.unpack_from("<H", p2, n2 + 16)[0] == 7)
 check("LoginWithS2SToken bool == 1", p2[-1] == 0x01, "0x%02x" % p2[-1])
 check("LoginWithS2SToken body == LoginWithToken body",
       p2[n2:] == p[n:], "%r vs %r" % (p2[n2:], p[n:]))
@@ -200,12 +206,14 @@ check("LoginWithS2SToken name differs from LoginWithToken name",
 
 nr = body_off("Register_V1")
 pr = L.register()
-check("Register total length", len(pr) == nr + 4 + 2 + 6, "%d B" % len(pr))
+check("Register total length", len(pr) == nr + 4 + 2 + 7, "%d B" % len(pr))
 check_bytes("Register u32 at +%d" % nr, pr[nr:nr + 4], b"\x01\x00\x00\x00")
 check("Register u32 == 1 (LE)", struct.unpack_from("<I", pr, nr)[0] == 1)
-check("Register String length at +%d == 6 (EXCL NUL)" % (nr + 4),
-      struct.unpack_from("<H", pr, nr + 4)[0] == 6)
-check_bytes("Register name field at +%d" % (nr + 6), pr[nr + 6:], b"Player")
+check("Register String length at +%d == 7 (INCL NUL)" % (nr + 4),
+      struct.unpack_from("<H", pr, nr + 4)[0] == 7)
+check_bytes("Register name field at +%d" % (nr + 6), pr[nr + 6:nr + 12], b"Player")
+check("Register name is NUL-terminated", pr[nr + 12:nr + 13] == b"\x00",
+      pr[nr + 12:nr + 13].hex())
 check("Register has no GUID", b"\xaa" not in pr)
 
 for void_method in ("RedirectLogin_V1", "RenewWithTicket_V1"):
@@ -287,17 +295,17 @@ check("LoginWithS2SToken custom GUID",
 
 print("== parameters: name / ok / player_id ==")
 pname = L.login_with_token(name="mimic-session")
-check("custom name String length == 13 (EXCL NUL)",
-      struct.unpack_from("<H", pname, n + 16)[0] == 13,
+check("custom name String length == 14 (INCL NUL)",
+      struct.unpack_from("<H", pname, n + 16)[0] == 14,
       "%d" % struct.unpack_from("<H", pname, n + 16)[0])
 check_bytes("custom name bytes", pname[n + 18:n + 31], b"mimic-session")
-check("custom name total length", len(pname) == n + 16 + 2 + 13 + 1)
+check("custom name total length", len(pname) == n + 16 + 2 + 14 + 1)
 check("custom name then bool", pname[-1] == 0x01)
 check("name as bytes", L.login_with_token(name=b"Player") == EXPECTED["LoginWithToken_V1"])
 check("name=None -> default", L.login_with_token(name=None) == EXPECTED["LoginWithToken_V1"])
-check("name='' -> empty String", L.login_with_token(name="")[n + 16:n + 18] == b"\x00\x00")
+check("name='' -> empty String", L.login_with_token(name="")[n + 16:n + 19] == b"\x01\x00\x00")
 check("empty name payload shorter",
-      len(L.login_with_token(name="")) == n + 16 + 2 + 1)
+      len(L.login_with_token(name="")) == n + 16 + 2 + 1 + 1)
 for ok_val, want in ((True, b"\x01"), (1, b"\x01"), ("yes", b"\x01"),
                      (False, b"\x00"), (0, b"\x00"), ("", b"\x00"), (None, b"\x01")):
     check("ok=%r -> %s" % (ok_val, want.hex()),
@@ -422,12 +430,12 @@ def fallback_payload(short):
     if short in ("LoginWithToken_V1", "LoginWithS2SToken_V1"):
         out += bytes.fromhex("000000000000000000000000000000aa")   # GUID
         txt = b"Player"
-        out += struct.pack("<H", len(txt)) + txt                    # Quazal String
+        out += struct.pack("<H", len(txt) + 1) + txt + b"\x00"      # String (incl NUL)
         out += b"\x01"                                             # bool
     elif short == "Register_V1":
         out += struct.pack("<I", 1)                                 # u32
         txt = b"Player"
-        out += struct.pack("<H", len(txt)) + txt                    # String
+        out += struct.pack("<H", len(txt) + 1) + txt + b"\x00"      # String (incl NUL)
     elif short in ("RedirectLogin_V1", "RenewWithTicket_V1"):
         pass                                                        # no fields
     return out

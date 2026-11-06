@@ -28,9 +28,10 @@ mgwaq: pool destroyed (CS=NULL) - skipped the queue push that would have crashed
 and produce no exception at all.
 
 **What to do:** just start the game again. Measured today: 7 of 18 launches
-reached a full session, so one or two restarts is the normal cost. The launcher
-retries automatically up to 3 times (it force-closes a launch that never
-connected, because the game ignores a close request).
+reached a full session, so one or two restarts is the normal cost. PLAY.bat
+starts the game exactly once and says so if it dropped out - it does not retry,
+and it never force-closes the game (a hard kill can truncate
+`Config\Engine.ini`, which then breaks every later launch).
 
 ## 2. Conquest and multiplayer are not reachable yet
 

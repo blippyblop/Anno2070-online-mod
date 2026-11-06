@@ -60,6 +60,9 @@ __all__ = [
     "packed_date",
     "unpack_date",
     "latest_event",
+    "event_for_day",
+    "day_ordinal",
+    "WORLD_EVENT_CHAPTERS",
     "complete_mission",
     "completed_missions",
     "event_stats",
@@ -91,7 +94,30 @@ __all__ = [
 #: every reply, make it monotonic per event window instead of constant.
 EVENT_INSTANCE_ID = 2070
 
-#: Wire f2 -- which client-local mission set the event uses.  See the note.
+#: Wire f2 -- which client-local mission set the event uses.
+#:
+#: It is a chapter GUID from the client's own ``assets.xml``, not an ordinal:
+#: the client resolves it against its shipped asset table and reads the
+#: mission vector from there, and an id it does not know shows no missions and
+#: logs "No mission GUID found for the given mission index."
+#: ``0`` (the value every earlier build sent) is not one of them.
+WORLD_EVENT_CHAPTERS = (
+    # (chapter GUID, missions in order, loca title for humans only)
+    (3054018, (3054014, 3054015, 3054016), "Atomic Terror"),
+    (3054105, (3054106, 3054107, 3054108), "The Eden Project"),
+    (3058000, (3058001, 3058002, 3058003), "Global Distrust"),
+    (3060000, (3060001, 3060002, 3060003), "The Nordamark Border Conflict"),
+    (3062000, (3062001, 3062002, 3062003), "The Secret of the Ebashi Trench"),
+)
+
+#: Which chapter the event of the day uses, and how long a chapter lasts.
+#: ``1`` = a different event every UTC day; ``7`` = a new chapter every week
+#: (a 3-mission story chain with its own mails is a multi-day arc, so weekly is
+#: the more faithful cadence).  ``0`` pins ``MISSION_SET_INDEX`` (the old
+#: behaviour) for a controlled A/B run.
+WORLD_EVENT_PERIOD_DAYS = 1
+DAY_SECONDS = 86400
+
 MISSION_SET_INDEX = 0
 
 #: Wire f3.  The client's converter drops this string outright (SS6), and the
@@ -361,6 +387,57 @@ def _packed_or_packed_now(value, fallback):
 # --------------------------------------------------------------------------
 # the event document
 # --------------------------------------------------------------------------
+
+def day_ordinal(now=None):
+    """UTC days since 1970-01-01 (stable within a day, +1 at 00:00 UTC)."""
+    return int(_now_datetime(now).timestamp()) // DAY_SECONDS
+
+
+def event_for_day(state, now=None, chapters=None, period_days=None):
+    """Point ``state`` (a store's ``worldEvent`` dict) at today's chapter.
+
+    Returns ``True`` when the event rolled.  The rule is deterministic: the
+    chapter is ``chapters[(utc_day // period_days) % len(chapters)]``, so every
+    calendar day has exactly one event, it is the same for every player and
+    every request within that day, and it changes tomorrow.  No RNG, so a
+    restart mid-day cannot change it and the state file only needs the day key.
+
+    ``period_days`` 1 = daily (default), 7 = weekly, 0 = pinned
+    (``MISSION_SET_INDEX``, the pre-rotation behaviour).
+    """
+    if not isinstance(state, dict):
+        return False
+    chapters = chapters or WORLD_EVENT_CHAPTERS
+    if period_days is None:
+        period_days = WORLD_EVENT_PERIOD_DAYS
+    try:
+        period_days = int(period_days)
+    except (TypeError, ValueError):
+        period_days = 1
+    day = day_ordinal(now)
+    if period_days <= 0:
+        chapter, instance = int(MISSION_SET_INDEX), int(EVENT_INSTANCE_ID)
+        slot = 0
+    else:
+        slot = (day // period_days) % len(chapters)
+        chapter = int(chapters[slot][0])
+        instance = int(EVENT_INSTANCE_ID) + slot
+    current = state.get("b")
+    if (state.get("day") == day and isinstance(current, int)
+            and current == chapter):
+        return False                      # same day, same event: nothing to do
+    previous = current
+    state["day"] = day
+    state["b"] = chapter
+    state["a"] = instance
+    state["since"] = day * DAY_SECONDS
+    state["visited"] = False
+    if previous != chapter:
+        # yesterday's mission completions belong to the previous chapter: the
+        # client greys out anything it cannot resolve against the new one
+        state["completedMissions"] = []
+    return True
+
 
 def latest_event(now=None, event=None):
     """Build the ``GetLatestWorldEvent_V1`` document (a plain dict).

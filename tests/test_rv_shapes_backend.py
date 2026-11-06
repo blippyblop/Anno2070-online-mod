@@ -84,9 +84,9 @@ def nb(method, proto=PROTO):
 
 
 def qs(text):
-    """Quazal String: u16 len EXCLUDING NUL, then raw bytes."""
+    """Quazal String: u16 len INCLUDING the NUL, then bytes + NUL."""
     b = text.encode("ascii")
-    return struct.pack("<H", len(b)) + b
+    return struct.pack("<H", len(b) + 1) + b + b"\x00"
 
 
 U8 = lambda v: struct.pack("<B", v & 0xFF)      # noqa: E731
@@ -181,12 +181,12 @@ print("== #3 CheckLoginAllowed_V1 (String msg + u16 kind) ==")
 eq(
     "check_login_allowed() clean",
     B.check_login_allowed(),
-    nb("CheckLoginAllowed_V1") + b"\x00\x00" + U16(0),
+    nb("CheckLoginAllowed_V1") + b"\x01\x00\x00" + U16(0),
 )
 eq(
     "check_login_allowed('', 0)",
     B.check_login_allowed("", 0),
-    nb("CheckLoginAllowed_V1") + b"\x00\x00" + b"\x00\x00",
+    nb("CheckLoginAllowed_V1") + b"\x01\x00\x00" + b"\x00\x00",
 )
 eq(
     "check_login_allowed('bad sandbox', 5)",
@@ -194,9 +194,9 @@ eq(
     nb("CheckLoginAllowed_V1") + qs("bad sandbox") + b"\x05\x00",
 )
 eq(
-    "check_login_allowed string len excludes NUL",
-    B.check_login_allowed("AB", 0)[-(2 + 2 + 2):],
-    b"\x02\x00AB\x00\x00",
+    "check_login_allowed string len includes the NUL",
+    B.check_login_allowed("AB", 0)[-(3 + 2 + 2):],
+    b"\x03\x00AB\x00\x00\x00",
 )
 
 print("== #4 IsMaintenanceOngoing_V1 (u8 bool) ==")
@@ -265,16 +265,16 @@ print("== #9 GetSandboxName_V1 (String) ==")
 eq(
     "get_sandbox_name() default",
     B.get_sandbox_name(),
-    nb("GetSandboxName_V1") + b"\x09\x00" + b"127.0.0.1",
+    nb("GetSandboxName_V1") + b"\x0a\x00" + b"127.0.0.1\x00",
 )
 eq(
     "get_sandbox_name('localhost')",
     B.get_sandbox_name("localhost"),
-    nb("GetSandboxName_V1") + b"\x09\x00" + b"localhost",
+    nb("GetSandboxName_V1") + b"\x0a\x00" + b"localhost\x00",
 )
 check(
-    "get_sandbox_name has no NUL on the wire",
-    b"\x00" not in B.get_sandbox_name("abc")[-3:],
+    "get_sandbox_name ends with the terminator",
+    B.get_sandbox_name("abc")[-1:] == b"\x00",
     repr(B.get_sandbox_name("abc")[-4:]),
 )
 
