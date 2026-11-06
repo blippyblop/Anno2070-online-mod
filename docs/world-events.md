@@ -48,24 +48,34 @@ putting a real date on it, and echoing the mission GUIDs the player solved**.
    (`MissionsRequired` in the assets). Reporting a later mission as solved does
    not unlock it in the UI.
 
+## What a mission completion now does (2026-11-06, later the same day)
+
+* `CompleteMission_V1` looks the mission GUID up in the shipped reward table
+  (1/5/10 points, 50/150/300 reputation), stamps those numbers on the record,
+  credits `players.<pid>.reputation` (add-only, the same map the senate vote
+  fills, so the career page shows one growing number) and adds the points to
+  `worldEvent.reputation`.
+* The event record's progress bar is derived: solved missions of the current
+  chapter out of the number it ships (e.g. 2/3), never a random number.
+* `GetStats_V1` is built from those records: per-player points and mission
+  counts in list A, per-player reputation in list B, best first, capped at the
+  client's four rows, with the three counters set to their totals.
+
 ## Next steps, in payoff order
 
-1. **Credit the reward and reputation on completion** (half a day). We already
-   know the mission → points/reputation mapping (1/5/10 and 50/150/300). On
-   `CompleteMission_V1`, add the points to `players.<pid>.reputation` (the same
-   key the vote reward uses - add only, never overwrite) and put the mission's
-   `Reward` item GUID into the ARK. That makes completing a mission *matter*
-   instead of only flipping a tick.
-2. **Community stats that look alive** (half a day). `GetStats_V1` already
-   returns two 4-row lists plus three counters built from per-player data; the
-   three counters' meaning is unproven, so fill the lists with real per-player
-   totals and leave the counters self-consistent.
-3. **Progress counters from real actions** (one day). `progress`/`progress max`
-   could advance with solved missions of the current chapter; keep it honest -
-   never move on a timer alone.
-4. **`UploadWorldEventTemplate_V1`**: store the raw bytes instead of the size.
+1. **Rewards that land in the ARK.** The mission asset names a `Reward` GUID
+   (e.g. `1114914`), but it is *not* an ArkItem id: the ARK record needs
+   `{socket_quality 1-3, socket_index, item_id, count}` and the client drops
+   anything whose item id it does not know. Until those GUIDs are resolved to
+   real item ids (`tools/ark_item_ids.json` is the oracle), a mission pays
+   reputation only - deliberately, because a bogus record renders as an empty
+   slot and looks broken.
+2. **`UploadWorldEventTemplate_V1`**: store the raw bytes instead of the size.
    If a client path ever uploads its template table, that hands us ground truth
-   for the 12 fields nobody has decoded.
+   for the twelve undecoded fields.
+3. **Per-mission progress text** is not available: the panel has one bar and a
+   four-state mission box (`Enabled/Disabled/Cleared`), so anything finer has to
+   be client-side.
 
 ## Experiments that settle the open questions
 

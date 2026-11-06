@@ -35,6 +35,14 @@ Fixed
   today's event. `RV_WORLD_EVENT_PERIOD_DAYS`-style pinning is
   `period_days=0` for A/B runs.
 
+Added
+- **World events pay out.** A solved mission credits reputation from the shipped
+  reward table (1/5/10 points, 50/150/300 reputation) into
+  `players.<pid>.reputation` and the world-event totals, the event's progress
+  bar counts solved missions out of the chapter's three, and `GetStats_V1`
+  returns a populated (four-row, best-first) community panel built from the real
+  records instead of empty lists.
+
 Changed
 - **PLAY.bat launches the game once.** The 3-attempt retry loop is gone: a
   launch that exits is reported (with PROGRESS) instead of being retried, and a

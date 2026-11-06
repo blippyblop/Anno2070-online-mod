@@ -581,13 +581,15 @@ def test_event_stats():
        "stat counter agrees with completed_missions()")
     eq(sum(e["a"] for e in stats["listA"]), stats["c1"],
        "listA counts sum to the completion counter")
-    eq([e["name"] for e in stats["listA"]], ["Ada", "Goose"],
-       "listA is one entry per player, sorted (stable reply bytes)")
-    eq([e["a"] for e in stats["listA"]], [1, 2], "listA holds per-player counts")
+    eq([e["name"] for e in stats["listA"]], ["Goose", "Ada"],
+       "listA is one entry per player, best points first (stable reply bytes)")
+    eq([e["b"] for e in stats["listA"]], [2, 1], "listA holds per-player counts")
     eq([(e["name"], e["a"]) for e in stats["listB"]],
-       [("Ada", 3), ("Goose", 12)], "listB mirrors the reputation map")
-    eq(stats["c0"], 1, "c0 mirrors the registered sessions")
-    eq(stats["c2"], 0, "c2 is 0 (meaning unknown -- documented guess)")
+       [("Goose", 12), ("Ada", 3)], "listB mirrors the reputation map, best first")
+    eq(stats["c0"], sum(e["a"] for e in stats["listA"]),
+       "c0 is the points total (documented guess over the three counters)")
+    eq(stats["c2"], len(state.get("registered") or []),
+       "c2 is the number of registered sessions")
     check(all(set(e) == {"name", "a", "b", "c"} for e in
               stats["listA"] + stats["listB"]),
           "every stats entry has exactly the four wire fields")

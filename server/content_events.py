@@ -118,6 +118,45 @@ WORLD_EVENT_CHAPTERS = (
 WORLD_EVENT_PERIOD_DAYS = 1
 DAY_SECONDS = 86400
 
+#: Per-mission reward table, from the shipped ``assets.xml``
+#: (``-MetaGame/Missions/WorldEvent/...``).  Mission 1 of a chapter is worth
+#: 1 point / 50 reputation, mission 2 is 5 / 150, mission 3 is 10 / 300 - the
+#: numbers the mission box itself shows.
+MISSION_POINTS = (1, 5, 10)
+MISSION_REPUTATION = (50, 150, 300)
+
+#: (mission GUID, chapter GUID, ordinal, points, reputation) - a tuple so the
+#: module stays free of mutable module-level state (see the hygiene test)
+MISSION_TABLE = tuple(
+    (int(_m), int(_chapter), _i, MISSION_POINTS[_i], MISSION_REPUTATION[_i])
+    for _chapter, _missions, _title in WORLD_EVENT_CHAPTERS
+    for _i, _m in enumerate(_missions)
+)
+
+
+def mission_info(mission_id):
+    """``{"chapter", "index", "points", "reputation"}`` for a mission GUID.
+
+    An unknown mission (the client can send anything) yields the first
+    mission's numbers so a completion still pays something and nothing raises.
+    """
+    wanted = _int(mission_id, 0)
+    for guid, chapter, index, points, reputation in MISSION_TABLE:
+        if guid == wanted:
+            return {"chapter": chapter, "index": index,
+                    "points": points, "reputation": reputation}
+    guid, chapter, index, points, reputation = MISSION_TABLE[0]
+    return {"chapter": None, "index": index,
+            "points": points, "reputation": reputation}
+
+
+def chapter_mission_count(chapter):
+    """How many missions the chapter ships (3 for all five)."""
+    for guid, missions, _title in WORLD_EVENT_CHAPTERS:
+        if int(guid) == _int(chapter, -1):
+            return len(missions)
+    return len(WORLD_EVENT_CHAPTERS[0][1])
+
 MISSION_SET_INDEX = 0
 
 #: Wire f3.  The client's converter drops this string outright (SS6), and the
@@ -483,6 +522,16 @@ def latest_event(now=None, event=None):
     }
 
     if isinstance(event, Mapping):
+        # progress bar: missions of this chapter already solved, out of the
+        # number the chapter ships.  Derived, never invented - an event with
+        # nothing solved is 0/3, not a random number.
+        solved = event.get("completedMissions")
+        if isinstance(solved, list):
+            ids = {_int(rec.get("id"), 0) for rec in solved
+                   if isinstance(rec, Mapping)}
+            total = chapter_mission_count(_int(event.get("b"), doc["b"]))
+            doc["g"] = max(1, total)
+            doc["f"] = min(len([i for i in ids if i]), doc["g"])
         doc["a"] = _int(event.get("a", event.get("id", event.get(
             "instanceId", doc["a"]))), doc["a"])
         doc["b"] = _int(event.get("b", event.get("eventId", event.get(
@@ -580,6 +629,9 @@ def complete_mission(state, mission_id, player_name, now=None):
         "id": mission,                     # rv_shapes: mission index
         "b": instance,                     # rv_shapes: "<player>_<unixtime>"
         "ts": int(when.timestamp()),       # bookkeeping only (never on the wire)
+        # what solving this mission is worth, straight from the shipped assets
+        "points": mission_info(mission)["points"],
+        "rep": mission_info(mission)["reputation"],
     })
     return COMPLETE_MISSION_REPLY
 
@@ -610,34 +662,148 @@ def event_stats(state):
     """The ``GetStats_V1`` document, derived from the same records.
 
     ``WorldEventStats`` = ``list<Entry> A, list<Entry> B, u32, u32, u32`` where
-    ``Entry`` = ``String name, u32, u32, u32``.  A = per-player completions,
-    B = per-player reputation (both already stored by the handlers), and the
-    three counters mirror the store (registered sessions, completions, 0).
+    ``Entry`` = ``String name, u32, u32, u32``.  A = per-player missions solved
+    (with the points those missions were worth), B = per-player reputation, and
+    the three counters are their totals so the panel cannot contradict itself.
 
-    GUESS (medium): the meaning of the three trailing counters is unknown
-    (SS7.3 "meaning ... unknown").  They are kept consistent with the lists so
-    that no combination can look self-contradictory; CONFIRM: the mission
-    overview's "community" numbers -- if they show 0 where a count belongs,
-    the mapping c0/c1/c2 is off.
+    Each list is capped at **4 rows**: the client's frame binds exactly four
+    widgets per list, so a longer one is silently truncated.
+
+    GUESS (medium): the meaning of the three counters is still unknown
+    (SS7.3).  They are the natural totals of what we do know - points,
+    missions, registered players - so any reading of them shows a sane number.
     """
     state = state if isinstance(state, dict) else {}
-    per_player = {}
-    missions = completed_missions(state)
-    for rec in missions:
-        per_player[rec["a"]] = per_player.get(rec["a"], 0) + 1
+    raw = state.get("completedMissions")
+    raw = raw if isinstance(raw, list) else []
+    missions = completed_missions(state)          # the wire projection
 
-    list_a = [{"name": pid, "a": count, "b": 0, "c": 0}
-              for pid, count in sorted(per_player.items())]
+    per_player = {}
+    for rec in raw:
+        if not isinstance(rec, Mapping):
+            continue
+        name = _text(rec.get("a"), "")
+        info = mission_info(rec.get("id"))
+        points = _int(rec.get("points"), info["points"])
+        row = per_player.setdefault(name, {"missions": 0, "points": 0})
+        row["missions"] += 1
+        row["points"] += points
+
+    list_a = [{"name": name, "a": row["points"], "b": row["missions"], "c": 0}
+              for name, row in sorted(per_player.items(),
+                                      key=lambda kv: (-kv[1]["points"], kv[0]))][:4]
+
     reputation = state.get("reputation")
     reputation = reputation if isinstance(reputation, Mapping) else {}
     list_b = [{"name": _text(pid), "a": _int(points), "b": 0, "c": 0}
               for pid, points in sorted(reputation.items(),
-                                        key=lambda kv: _text(kv[0]))]
+                                        key=lambda kv: (-_int(kv[1], 0),
+                                                        _text(kv[0])))][:4]
+
     registered = state.get("registered")
     return {
         "listA": list_a,
         "listB": list_b,
-        "c0": len(registered) if isinstance(registered, list) else 0,
+        "c0": sum(row["points"] for row in per_player.values()),
         "c1": len(missions),
-        "c2": 0,
+        "c2": len(registered) if isinstance(registered, list) else 0,
     }
+
+def set_visited(state, visited=True):
+    """Record the "seen it" flag on the store dict (``SetVisited_V1``).
+
+    ``state`` is the plain ``worldEvent`` dict (``store.state["worldEvent"]``);
+    ``latest_event(event=state)`` then reports it as f8.  Returns the flag.
+    """
+    if not isinstance(state, dict):
+        return bool(visited)
+    state["visited"] = bool(visited)
+    return state["visited"]
+
+
+# --------------------------------------------------------------------------
+# missions
+# --------------------------------------------------------------------------
+
+def _split_instance(player_name):
+    """``"<PlayerName>_<unixtime>"`` -> ``(player, instance_name)``.
+
+    The client's ``CompleteMission`` request string is built as
+    ``"<PlayerName>_<unixseconds>"`` (SS7.2, ``we_ui.c`` case 0xca).  The
+    player identity is the part before that numeric suffix, which is what we
+    de-duplicate on; a name without such a suffix is used unchanged as both.
+    """
+    text = _text(player_name, "")
+    if "_" in text:
+        head, _, tail = text.rpartition("_")
+        if head and tail.isdigit() and len(tail) >= 9:
+            return head, text
+    return text, text
+
+
+def complete_mission(state, mission_id, player_name, now=None):
+    """Record one mission completion; return the ``CompleteMission_V1`` u32.
+
+    ``state``       plain dict (``store.state["worldEvent"]``).  A non-dict is
+                    tolerated and simply records nothing.
+    ``mission_id``  the mission index the client sent (first request u32; it is
+                    an index into the event's local mission list, not a GUID).
+    ``player_name`` the request String, ``"<PlayerName>_<unixtime>"``.
+    ``now``         completion timestamp (default: now, UTC); stored for the
+                    stats/list ordering only, never sent as a packed Date.
+
+    Idempotent **per (mission, player)**: a repeat call (same player, same
+    mission, different instance string/timestamp) does not append a second
+    record.  The client's own pending map keys by mission index, so a duplicate
+    would only ever be noise.  Returns :data:`COMPLETE_MISSION_REPLY` (0), the
+    value the client stores unvalidated.
+    """
+    try:
+        when = _as_utc_datetime(now)
+    except (TypeError, ValueError):
+        when = datetime.now(timezone.utc)
+    mission = _int(mission_id, 0)
+    player, instance = _split_instance(player_name)
+
+    if not isinstance(state, dict):
+        return COMPLETE_MISSION_REPLY
+    records = state.get("completedMissions")
+    if not isinstance(records, list):
+        records = state["completedMissions"] = []
+    for rec in records:
+        if isinstance(rec, Mapping) and _int(rec.get("id"), -1) == mission \
+                and _text(rec.get("a"), "") == player:
+            return COMPLETE_MISSION_REPLY
+    records.append({
+        "a": player,                       # rv_shapes: display name
+        "id": mission,                     # rv_shapes: mission index
+        "b": instance,                     # rv_shapes: "<player>_<unixtime>"
+        "ts": int(when.timestamp()),       # bookkeeping only (never on the wire)
+        # what solving this mission is worth, straight from the shipped assets
+        "points": mission_info(mission)["points"],
+        "rep": mission_info(mission)["reputation"],
+    })
+    return COMPLETE_MISSION_REPLY
+
+
+def completed_missions(state, player=None):
+    """The ``list<WorldEventCompletedMission>`` records from ``state``.
+
+    Entries are ``{"a": player, "id": mission, "b": instance}`` -- the three
+    keys ``rv_shapes.voting.completed_mission()`` writes in wire order
+    (String, u32, String).  ``player`` narrows to one player (that is the
+    difference between ``GetOwn...`` and ``GetLast...``).
+    """
+    records = state.get("completedMissions") if isinstance(state, dict) else None
+    out = []
+    for rec in records if isinstance(records, list) else ():
+        if not isinstance(rec, Mapping):
+            continue
+        name = _text(rec.get("a"), "")
+        if player is not None and name != _text(player, ""):
+            continue
+        out.append({"a": name,
+                    "id": _int(rec.get("id"), 0),
+                    "b": _text(rec.get("b"), "")})
+    return out
+

@@ -447,6 +447,14 @@ def read_stats_entries(r):
     return out
 
 
+def _as_int(value, fallback):
+    """``int(value)`` or ``fallback`` - for values read out of JSON/records."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return int(fallback)
+
+
 def _int_keyed(d):
     """Store-side view of a ``map<u32, ...>`` (JSON turns keys into strings)."""
     out = {}
@@ -975,6 +983,43 @@ def _credit_vote(store, faction, ctx):
         wer[pid] = content_voting.VOTE_REWARD
 
 
+def _credit_mission(store, pid, record):
+    """Pay out a solved world-event mission: career reputation + event points.
+
+    The mission's worth comes from the shipped asset table
+    (``content_events.mission_info``): 1/5/10 points and 50/150/300 reputation.
+    The reputation lands in ``players.<pid>.reputation`` - the same map the
+    senate vote fills, so the career page shows one growing number - under the
+    first key the player already has (a vote picks the faction key), or key 0
+    when this is the first reputation they ever earn.  Add only; never
+    overwrite, so a vote reward cannot be wiped by a mission and vice versa.
+    """
+    if not isinstance(record, dict):
+        return
+    info = content_events.mission_info(record.get("id"))
+    points = _as_int(record.get("points"), info["points"])
+    rep_points = _as_int(record.get("rep"), info["reputation"])
+    record["points"], record["rep"] = points, rep_points
+
+    p = store.player(pid)
+    rep = p.get("reputation")
+    if not isinstance(rep, dict):
+        rep = p["reputation"] = {}
+    normalised = _int_keyed(rep)
+    key = min(normalised) if normalised else 0
+    normalised[key] = _as_int(normalised.get(key), 0) + rep_points
+    p["reputation"] = normalised
+
+    we = _world_event_state(store)
+    wer = we.get("reputation")
+    if not isinstance(wer, dict):
+        wer = we["reputation"] = {}
+    try:
+        wer[pid] = _as_int(wer.get(pid), 0) + points
+    except (TypeError, ValueError):
+        wer[pid] = points
+
+
 def _voting_slot_for(store, raw_id):
     """Store slot for the Vote id the client just sent (0 when unknown)."""
     for slot, info in _elections(store).items():
@@ -1137,6 +1182,7 @@ def h_we_complete_mission(store, r, ctx):
     if (isinstance(records, list) and len(records) > before
             and isinstance(records[-1], dict)):
         records[-1]["pid"] = _ctx_pid(ctx)
+        _credit_mission(store, _ctx_pid(ctx), records[-1])
     store.save()
     return _reply(WORLD, "CompleteMission_V1", result=result)
 

@@ -170,6 +170,69 @@ def test_council_vote_survives(tmp):
           stored.get("0"))
 
 
+def test_mission_payout(tmp):
+    print("a solved world-event mission pays out and shows progress")
+    path = os.path.join(tmp, "missions.json")
+    store = R.open_store(path)
+    we = store.state.setdefault("worldEvent", {})
+    CE.event_for_day(we)
+    chapter = we["b"]
+
+    def solve(guid):
+        return R.respond_payload(WORLD, "CompleteMission_V1", store=store,
+                                 body=le32(guid) + b"\x06\x00Player\x00")
+
+    check("mission 1 completes", solve(3054014) is not None)
+    check("the catalogue pays 1 point / 50 reputation",
+          store.state["worldEvent"]["completedMissions"][-1].get("points") == 1
+          and store.state["worldEvent"]["completedMissions"][-1].get("rep") == 50,
+          store.state["worldEvent"]["completedMissions"][-1])
+    check("career reputation is credited",
+          store.player("default")["reputation"] == {0: 50},
+          store.player("default")["reputation"])
+    check("the event reputation grows too",
+          store.state["worldEvent"]["reputation"].get("default") == 1,
+          store.state["worldEvent"]["reputation"])
+
+    doc = CE.latest_event(event=store.state["worldEvent"])
+    check("the progress bar counts solved missions", (doc["f"], doc["g"]) == (1, 3),
+          (doc["f"], doc["g"]))
+
+    solve(3054015)                       # 5 points / 150 reputation
+    reopened = R.open_store(path)        # survives a restart
+    check("two missions survived the restart",
+          len(reopened.state["worldEvent"]["completedMissions"]) == 2)
+    check("career reputation accumulates",
+          reopened.player("default")["reputation"] == {0: 200},
+          reopened.player("default")["reputation"])
+    check("a repeat completion does not pay twice",
+          (solve_again := R.respond_payload(WORLD, "CompleteMission_V1",
+                                            store=reopened,
+                                            body=le32(3054015) + b"\x06\x00Player\x00")) is not None
+          and reopened.player("default")["reputation"] == {0: 200},
+          reopened.player("default")["reputation"])
+
+    stats = CE.event_stats(reopened.state["worldEvent"])
+    check("the community panel is populated", stats["listA"] and stats["listB"], stats)
+    check("the panel lists the player's points", stats["listA"][0]["a"] == 6, stats["listA"])
+    check("the totals agree with the rows",
+          stats["c0"] == 6 and stats["c1"] == 2, stats)
+    check("Chapter is the one the rotation picked",
+          doc["b"] == chapter and CE.mission_info(3054014)["chapter"] in
+          [c[0] for c in CE.WORLD_EVENT_CHAPTERS])
+
+
+def test_stats_capped():
+    print("the community panel never exceeds the client's 4 rows")
+    state = {"completedMissions": [{"a": "P%d" % i, "id": 3054014, "ts": 0}
+                                   for i in range(9)],
+             "reputation": {"p%d" % i: i for i in range(9)},
+             "registered": []}
+    stats = CE.event_stats(state)
+    check("listA capped at 4", len(stats["listA"]) == 4, len(stats["listA"]))
+    check("listB capped at 4", len(stats["listB"]) == 4, len(stats["listB"]))
+
+
 def test_day_rotation():
     print("the world event rotates over the real chapters, one per UTC day")
     base = datetime(2026, 11, 6, 12, 0, tzinfo=timezone.utc)
@@ -235,6 +298,8 @@ def main():
         test_vote_reputation(tmp)
         test_legacy_reputation_list(tmp)
         test_council_vote_survives(tmp)
+        test_mission_payout(tmp)
+        test_stats_capped()
         test_day_rotation()
         test_state_file_is_shared(tmp)
     finally:
