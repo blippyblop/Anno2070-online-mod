@@ -58,21 +58,26 @@ jobs:
         run: |
           # --server mode must boot the whole server inside the frozen exe;
           # this is the failure that once produced "No module named 'json'".
+          # an ABSOLUTE log dir: a relative one is resolved against the
+          # package folder (not the cwd), so the old check watched a file that
+          # was never written and failed a server that was perfectly healthy
+          $logdir = Join-Path $PWD 'smoke-logs'
           $exe = 'dist/Anno2070Online/Anno2070Online.exe'
           $p = Start-Process -FilePath $exe -PassThru -NoNewWindow `
             -ArgumentList '--server','--config','dist/Anno2070Online/config.ini',
-                          '--log-dir','smoke-logs','--http','18999','--conquest','18998',
+                          '--log-dir',$logdir,'--http','18999','--conquest','18998',
                           '--prudp-tcp','18997','--udp','0'
+          $log = Join-Path $logdir 'server.log'
           $ok = $false
           for ($i = 0; $i -lt 30; $i++) {
             Start-Sleep -Seconds 1
-            if (Test-Path 'smoke-logs/server.log') {
-              if (Select-String -Path 'smoke-logs/server.log' -Pattern 'HTTP  listening' -Quiet) { $ok = $true; break }
+            if (Test-Path $log) {
+              if (Select-String -Path $log -Pattern 'HTTP  listening' -Quiet) { $ok = $true; break }
             }
             if ($p.HasExited) { break }
           }
           if (-not $ok) {
-            Get-Content smoke-logs/server.log -ErrorAction SilentlyContinue
+            Get-Content $log -ErrorAction SilentlyContinue
             throw 'the frozen server did not come up'
           }
           Write-Host 'frozen server came up'
