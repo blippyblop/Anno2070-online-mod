@@ -1,3 +1,7 @@
+# Warning
+
+Experimental, use at own risk, not affiliated with Ubisoft, EA, Blue Byte, Digicircus, Or any game publisher etc etc
+
 # About
 
 Implements online features to a local server process. Patches your Anno 2070 exe to point to a localhost server, which then exposes online functionality to you.
