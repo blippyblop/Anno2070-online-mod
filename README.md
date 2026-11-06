@@ -27,7 +27,7 @@ Not working:
 
 # Install (no Python needed)
 
-1. Install Anno 2070 (3.0.8051 / GOLDMASTER) as usual.
+1. Install Anno 2070 (3.0.8051 / GOLDMASTER) as usual. (This is the latest steam release)
 2. Download `Anno2070Online-Setup.exe` from the [latest release](../../releases/latest)
    and run it. It asks for your player name (and for the game folder only if it
    cannot find it).
