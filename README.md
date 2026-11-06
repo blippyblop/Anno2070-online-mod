@@ -24,6 +24,8 @@ Not working:
 
 Run the install, then run the run exe. 
 
+It'll give a smartscreen warning for being an unsigned publisher. Yeah it will. I'll push a manual-install feature if you don't want to trust the built exe (although as a hint; the artifacts come from github and the code that writes the builds is also in the repo, so you have a complete chain of code -> build process code -> executables which you can audit for wrongdoing)
+
 # Future
 
 Multiplayer would be nice but it's a big problem since a server needs to be hosted internet or LAN accessible to coordinate lobbies. 
