@@ -1,0 +1,118 @@
+name: release
+
+# Builds the two Windows executables on every tag and attaches them to a
+# GitHub release. Nothing else is needed: the loader DLL is committed, the
+# server is pure Python stdlib, and PyInstaller is installed by the build
+# script itself.
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# Also runnable by hand (workflow_dispatch) to check that a build still works
+# without publishing anything.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Show versions
+        run: |
+          python --version
+          python -c "import sys; print(sys.executable)"
+
+      - name: Build the launcher and the installer
+        run: powershell -ExecutionPolicy Bypass -File packaging/build-exes.ps1
+
+      - name: Package portable build + checksums
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist/Anno2070Online -DestinationPath dist/Anno2070Online-portable.zip
+          $files = @(
+            'dist/Anno2070Online-Setup.exe',
+            'dist/Anno2070Online-portable.zip'
+          )
+          $lines = foreach ($f in $files) {
+            $h = (Get-FileHash $f -Algorithm SHA256).Hash.ToLower()
+            "$h  $(Split-Path -Leaf $f)"
+          }
+          $lines | Set-Content -Encoding ascii dist/SHA256SUMS.txt
+          Get-Content dist/SHA256SUMS.txt
+          Get-ChildItem dist | Format-Table Name, Length
+
+      - name: Smoke-test the frozen server (no game needed)
+        shell: pwsh
+        run: |
+          # --server mode must boot the whole server inside the frozen exe;
+          # this is the failure that once produced "No module named 'json'".
+          $exe = 'dist/Anno2070Online/Anno2070Online.exe'
+          $p = Start-Process -FilePath $exe -PassThru -NoNewWindow `
+            -ArgumentList '--server','--config','dist/Anno2070Online/config.ini',
+                          '--log-dir','smoke-logs','--http','18999','--conquest','18998',
+                          '--prudp-tcp','18997','--udp','0'
+          $ok = $false
+          for ($i = 0; $i -lt 30; $i++) {
+            Start-Sleep -Seconds 1
+            if (Test-Path 'smoke-logs/server.log') {
+              if (Select-String -Path 'smoke-logs/server.log' -Pattern 'HTTP  listening' -Quiet) { $ok = $true; break }
+            }
+            if ($p.HasExited) { break }
+          }
+          if (-not $ok) {
+            Get-Content smoke-logs/server.log -ErrorAction SilentlyContinue
+            throw 'the frozen server did not come up'
+          }
+          Write-Host 'frozen server came up'
+          Stop-Process -Id $p.Id -Force
+
+      - name: Upload build artefacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: anno2070-online-windows
+          path: |
+            dist/Anno2070Online-Setup.exe
+            dist/Anno2070Online-portable.zip
+            dist/SHA256SUMS.txt
+
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Anno 2070 - Local Online ${{ github.ref_name }}
+          draft: false
+          generate_release_notes: true
+          body: |
+            Local replacement for the shut-down Anno 2070 online backend.
+
+            **Install:** download `Anno2070Online-Setup.exe`, run it, enter your
+            player name, then start the game from the new
+            "Anno 2070 - Local Online" shortcut. No Python needed.
+
+            **Portable:** `Anno2070Online-portable.zip` is the same runtime
+            unpacked - unzip anywhere and run `Anno2070Online.exe`.
+
+            **Verify:** `SHA256SUMS.txt` has the hashes of both files.
+
+            What works: online session, ARK item box, senate and World Council
+            elections and votes, world events, profile, chat/friends/mail.
+            Known limits: about 1 launch in 3 hits a client-side bootstrap crash
+            (the launcher retries automatically), and conquest/multiplayer is
+            not reachable yet. See `docs/known-issues.md` in the source.
+
+            Not affiliated with Ubisoft. Contains no game code, data or assets.
+          files: |
+            dist/Anno2070Online-Setup.exe
+            dist/Anno2070Online-portable.zip
+            dist/SHA256SUMS.txt

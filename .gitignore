@@ -1,9 +1,13 @@
 # runtime
 logs/
+smoke-logs/
 server/state.json
 *.log
 __pycache__/
 *.pyc
+build/
+dist/
+payload.zip
 
 # never commit game files or reverse-engineering artefacts
 Anno5.exe
