@@ -2247,6 +2247,9 @@ def _json_span(buf):
     return i, n, False
 
 
+HERE_DIR = os.path.dirname(os.path.abspath(__file__))   # .../server
+
+
 def _apply_config(ap, args):
     """Read config.ini and fold it into `args`.
 
@@ -2315,8 +2318,20 @@ def _apply_config(ap, args):
     # a few options a player may genuinely want (command line still wins)
     if "log_dir" not in given:
         args.log_dir = _get("server", "log_dir") or args.log_dir
+    if args.log_dir and not os.path.isabs(args.log_dir):
+        args.log_dir = os.path.normpath(os.path.join(HERE_DIR, "..", args.log_dir))
     if "data_file" not in given:
         args.data_file = _get("server", "state_file") or args.data_file
+    # Resolve the state file against the PACKAGE folder, never the process CWD:
+    # a relative path silently produced a different file per launch method
+    # (PLAY.bat vs the exe vs a shortcut), which looks exactly like "it forgot
+    # my vote".
+    if args.data_file and not os.path.isabs(args.data_file):
+        # relative to the PACKAGE root (the parent of server/), which is what
+        # config.ini's "server/state.json" means - joining against HERE_DIR
+        # produced server/server/state.json
+        args.data_file = os.path.normpath(
+            os.path.join(os.path.dirname(HERE_DIR), args.data_file))
     if _get("options", "notification_push", bool, True) is False:
         os.environ["RV_SPACEPARAMS"] = "0"
     if _get("options", "diagnostics", bool, False):

@@ -228,6 +228,58 @@ def _close_game_gracefully(timeout=25):
         return False
 
 
+def _kill_stale():
+    """Kill leftover game/server processes from an earlier run (PLAY.bat does
+    this and that is the behaviour that works).
+
+    The frozen launcher used to start on top of a stale server: the port check
+    then passed because the OLD server was listening, the game talked to it, and
+    when it finally exited it wrote ITS in-memory state over the file - which is
+    how a vote could silently disappear.
+    """
+    flag = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        out = subprocess.run(
+            ["powershell", "-nop", "-Command",
+             "Get-CimInstance Win32_Process -Filter \"name='Anno2070Online.exe'\" | "
+             "ForEach-Object { \"$($_.ProcessId)|$($_.CommandLine)\" }"],
+            capture_output=True, text=True, creationflags=flag)
+        lines = [l.strip() for l in (out.stdout or "").splitlines() if "|" in l]
+    except Exception:
+        lines = []
+    mine = os.getpid()
+    for line in lines:
+        pid_s, _, cmd = line.partition("|")
+        if "--server" not in cmd:
+            continue
+        try:
+            pid = int(pid_s.strip())
+        except ValueError:
+            continue
+        if pid != mine:
+            subprocess.run(["taskkill", "/f", "/pid", str(pid)],
+                           capture_output=True, creationflags=flag)
+    subprocess.run(["taskkill", "/f", "/im", "Anno5.exe"],
+                   capture_output=True, creationflags=flag)
+    time.sleep(1.0)
+
+
+def game_running():
+    """Is Anno5.exe alive? PLAY.bat asks the same question with tasklist."""
+    try:
+        out = subprocess.run(["tasklist", "/fi", "imagename eq Anno5.exe"],
+                             capture_output=True, text=True,
+                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        return "Anno5.exe" in (out.stdout or "")
+    except Exception:
+        return False
+
+
+def _wait_for_game_exit():
+    while game_running():
+        time.sleep(2)
+
+
 def launch(cfg_path):
     cfg = read_config(cfg_path)
     name = cfg_get(cfg, "player", "name", "Player")
@@ -256,7 +308,10 @@ def launch(cfg_path):
         except OSError:
             pass
 
-    print("[1/3] starting the local server")
+    print("[1/3] clearing stale processes")
+    _kill_stale()
+
+    print("[2/3] starting the local server")
     proc = subprocess.Popen(server_command(cfg_path), cwd=HERE,
                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     for _ in range(30):
@@ -273,38 +328,30 @@ def launch(cfg_path):
     env = dict(os.environ)
     env["UPC_CONQUEST_SUPPRESS_MS"] = "0"
     for attempt in range(1, MAX_ATTEMPTS + 1):
-        print(f"[2/3] starting Anno 2070 (attempt {attempt} of {MAX_ATTEMPTS})")
-        game_proc = subprocess.Popen([os.path.join(game, "Anno5.exe")], cwd=game, env=env)
+        print(f"[3/3] starting Anno 2070 (attempt {attempt} of {MAX_ATTEMPTS})")
+        # Exactly PLAY.bat: `start "" Anno5.exe` from the game folder (own
+        # console, detached). That is the behaviour that works; the game is then
+        # tracked with tasklist because `start` returns immediately.
+        subprocess.run(["cmd", "/c", "start", "", "Anno5.exe"], cwd=game, env=env,
+                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         for _ in range(BOOTSTRAP_WAIT):
             time.sleep(1)
-            if game_proc.poll() is not None:
+            if not game_running():
                 break
-        # A live process counts as success. Judging on the call count instead
-        # closed games that were working but slow (reported as "failed to
-        # connect" by players), so 0.1.2 goes back to the 0.1.0 rule: only a
-        # process that EXITS is a failed attempt.
-        if game_proc.poll() is None:
-            # The process survived. Say plainly whether the ONLINE session did
-            # too; the client can sit in the menu having given up, and a player
-            # should not have to guess (nor should the launcher kill a game that
-            # may still be usable).
+        if game_running():
             if rv_calls(log) >= MIN_RV_CALLS:
-                print("[3/3] the game is up and online. Have fun.")
+                print("      the game is up and online. Have fun.")
             else:
-                print("      the game is up but the ONLINE session did not come")
-                print("      up this time (a known client-side race). Quit Anno")
-                print("      and start it again - it normally works within 1-3")
-                print("      tries. Nothing else is wrong.")
-            game_proc.wait()
+                print("      the game is up but the ONLINE session did not come up")
+                print("      this time (a known client-side race). Quit Anno and")
+                print("      start it again - it normally works within 1-3 tries.")
+            _wait_for_game_exit()
             print("      the game has exited.")
             print()
             print_status(cfg_path)
             break
-        # a failed attempt: close the client GRACEFULLY (no /f - a hard kill
-        # truncates Config\Engine.ini and the next start fails for ever)
-        print("      the online session did not come up this time")
+        print("      the client exited during its online bootstrap")
         print("      (known client-side crash, about 1 run in 3) - retrying")
-        _close_game_gracefully()
         time.sleep(3)
     else:
         print("[3/3] three attempts failed. Run with --status for details.")
