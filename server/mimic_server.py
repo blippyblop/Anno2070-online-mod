@@ -77,7 +77,7 @@ DEFAULT_PUBLIC_KEY = "RUNLMSAAAABMO8fxWTycqoIbH/UtipbznP2GHSWcYz/eh3WJyDzrxcFNF0
 # alt encoding (SEC1 uncompressed point) for RV_PUBKEY_FORM=sec1
 DEFAULT_PUBLIC_KEY_SEC1 = "BEw7x/FZPJyqghsf9S2KlvOc/YYdJZxjP96HdYnIPOvFwU0XT18+xp4e2oRb1jgWrxKCeXJDF8axavg0pQ/CeB4="
 
-SERVER_VERSION = "v71-nodelay"
+SERVER_VERSION = "v72-delay-back"
 # display name used by the login/profile replies; set from config.ini
 PLAYER_NAME = "Player"
 
@@ -727,7 +727,7 @@ def ws_frame_loop(c, origin):
                 # network; the client's own endpoint attach (WebSocketStream phase
                 # 3) races the first inbound message, and losing that race is the
                 # 0x1362214 crash. RV_DELAY_MS is the knob.
-                _rvdelay = os.environ.get("RV_DELAY_MS", "0").strip() or "0"
+                _rvdelay = os.environ.get("RV_DELAY_MS", "200").strip() or "200"
                 try:
                     _rvdelay = int(_rvdelay)
                 except ValueError:
@@ -757,7 +757,7 @@ def ws_frame_loop(c, origin):
                         # (RV_DELAY_MS=0 replies immediately) so the client's
                         # reaction to a late reply can be told apart from a
                         # protocol problem.
-                        _d = os.environ.get("RV_DELAY_MS", "0").strip() or "0"
+                        _d = os.environ.get("RV_DELAY_MS", "200").strip() or "200"
                         time.sleep(max(0, int(_d)) / 1000.0)
                         # Binary, mirroring the client's own framing (op=2).
                         # The text-opcode variant was tried and made no

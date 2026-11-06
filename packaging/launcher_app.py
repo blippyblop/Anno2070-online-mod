@@ -279,16 +279,22 @@ def launch(cfg_path):
             time.sleep(1)
             if game_proc.poll() is not None:
                 break
-            # A launch that has not reached the login burst by ~60 s never
-            # will: the client has already gone offline. Restarting early
-            # saves the player a 100 s wait on the ~1-in-3 bad launches.
-            if _ >= FAST_FAIL_SECS and rv_calls(log) < MIN_RV_CALLS:
-                break
-        # a live process is not a live session: the client can sit in the menu
-        # having given up (5-15 calls). Measured sessions that work answer
-        # 25-71 calls, so judge on the log, not on the process.
-        if game_proc.poll() is None and rv_calls(log) >= MIN_RV_CALLS:
-            print("[3/3] the game is up. Have fun.")
+        # A live process counts as success. Judging on the call count instead
+        # closed games that were working but slow (reported as "failed to
+        # connect" by players), so 0.1.2 goes back to the 0.1.0 rule: only a
+        # process that EXITS is a failed attempt.
+        if game_proc.poll() is None:
+            # The process survived. Say plainly whether the ONLINE session did
+            # too; the client can sit in the menu having given up, and a player
+            # should not have to guess (nor should the launcher kill a game that
+            # may still be usable).
+            if rv_calls(log) >= MIN_RV_CALLS:
+                print("[3/3] the game is up and online. Have fun.")
+            else:
+                print("      the game is up but the ONLINE session did not come")
+                print("      up this time (a known client-side race). Quit Anno")
+                print("      and start it again - it normally works within 1-3")
+                print("      tries. Nothing else is wrong.")
             game_proc.wait()
             print("      the game has exited.")
             print()
