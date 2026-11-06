@@ -471,7 +471,7 @@ def event_for_day(state, now=None, chapters=None, period_days=None):
     state["a"] = instance
     state["since"] = day * DAY_SECONDS
     state["visited"] = False
-    if previous != chapter:
+    if previous is not None and previous != chapter:
         # yesterday's mission completions belong to the previous chapter: the
         # client greys out anything it cannot resolve against the new one
         state["completedMissions"] = []

@@ -1802,8 +1802,30 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+class _ExclusiveHTTPServer(ThreadingHTTPServer):
+    """Refuse to share the port with another instance.
+
+    ``http.server`` sets ``allow_reuse_address``, which on Windows lets a second
+    server bind a port that is already in use - two servers then answer the
+    same client and each writes its own copy of the state over the other's
+    ("my vote disappeared").  Binding must fail loudly instead.
+    """
+
+    allow_reuse_address = False
+    if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+        def server_bind(self):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            ThreadingHTTPServer.server_bind(self)
+
+
 def http_serve(port):
-    srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    try:
+        srv = _ExclusiveHTTPServer(("127.0.0.1", port), Handler)
+    except OSError as exc:
+        log(f"HTTP  REFUSED port {port}: {exc} - another local server already "
+            f"owns it. Close that window (or kill that PID) and start again; "
+            f"two servers would overwrite each other's saved state.")
+        return
     srv.daemon_threads = True
     log(f"HTTP  listening on 127.0.0.1:{port} (plain http + ws-upgrade)")
     srv.serve_forever()

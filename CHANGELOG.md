@@ -41,6 +41,15 @@ Added
   vote panels (own vote + counted votes), the event of the day and the missions
   solved - read straight out of `server/state.json`, so "did it save?" is one
   double-click away.
+- **A second server can no longer hijack the port.** `http.server`'s
+  `allow_reuse_address` let a second instance bind an already-used port (on
+  Windows), so two servers answered the same client and overwrote each other's
+  saved state - the classic "my vote disappeared". Binding now fails loudly with
+  a message naming the cause, and `SO_EXCLUSIVEADDRUSE` is set on Windows.
+- **The event rotation no longer clears a fresh state.** Rolling from "no day
+  key yet" to today's chapter wiped the mission records of a session that had
+  already completed missions; the clear now only happens when a *previous*
+  chapter is really being replaced.
 - **The JSON save is hardened.** Every save now records `"schema": 2`, is
   written to `.tmp`, flushed/fsynced, and the previous good file is kept once
   as `state.json.bak` before the new one replaces it.
