@@ -1,0 +1,12 @@
+# runtime
+logs/
+server/state.json
+*.log
+__pycache__/
+*.pyc
+
+# never commit game files or reverse-engineering artefacts
+Anno5.exe
+*.rda
+*.dll
+!loader/bin/upc_r2_loader64.dll

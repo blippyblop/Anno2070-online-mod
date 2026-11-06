@@ -1,0 +1,71 @@
+@echo off
+rem =====================================================================
+rem  PROGRESS.bat - what did the last session actually achieve?
+rem  Reads logs\server.log and prints the numbers that matter.
+rem =====================================================================
+setlocal enabledelayedexpansion
+cd /d "%~dp0"
+set "SV=logs\server.log"
+
+if not exist "%SV%" (
+  echo No server log yet - run PLAY.bat first.
+  goto :end
+)
+
+echo ================= ANNO 2070 LOCAL ONLINE - LAST SESSION =============
+for %%F in ("%SV%") do echo log: %%~fF   written %%~tF
+
+set RV=0
+for /f %%c in ('findstr /c:"RV-RMC [http:/]" "%SV%" ^| find /c /v ""') do set RV=%%c
+set FAIL=0
+for /f %%c in ('findstr /c:"status=0" "%SV%" ^| find /c /v ""') do set FAIL=%%c
+set PUSH=0
+for /f %%c in ('findstr /c:"pushed space-params" "%SV%" ^| find /c /v ""') do set PUSH=%%c
+set NAME=
+for /f "usebackq tokens=1,2 delims==" %%A in ("%~dp0config.ini") do (
+  set "k=%%A"
+  set "v=%%B"
+  set "k=!k: =!"
+  if /i "!k!"=="name" set "NAME=%%B"
+)
+
+echo.
+echo [ session ]   player name       : !NAME!
+echo               RV calls answered : !RV!
+echo               failed replies    : !FAIL!   (0 is the goal)
+echo               notification push : !PUSH! frames
+
+echo.
+echo [ services exercised ]
+for %%P in (LoginProtocol BackEndServiceProtocol PlayerProfileServiceProtocol VotingServiceProtocol WorldEventServiceProtocol ChatServiceProtocol FriendsServiceProtocol MailServiceProtocol MatchMakingServiceProtocol) do (
+  set N=0
+  for /f %%c in ('findstr /c:"%%P::" "%SV%" ^| find /c /v ""') do set N=%%c
+  if not "!N!"=="0" echo    %%P  : !N! calls
+)
+
+echo.
+echo [ the headline features ]
+findstr /c:"GetArkItems_V1" "%SV%" >nul && (echo    ARK item box      : YES) || echo    ARK item box      : no
+findstr /c:"GetVotingInfos_V1" "%SV%" >nul && (echo    senate elections  : YES) || echo    senate elections  : no
+findstr /c:"Vote_V1 call" "%SV%" >nul && (echo    a vote was cast   : YES) || echo    a vote was cast   : no
+findstr /c:"GetLatestWorldEvent_V1" "%SV%" >nul && (echo    world events      : YES) || echo    world events      : no
+findstr /c:"PlayerProfile" "%SV%" >nul && (echo    player profile    : YES) || echo    player profile    : no
+
+echo.
+echo [ not implemented yet ]
+findstr /c:"CONQ-HTTP <-" "%SV%" >nul && (echo    conquest server   : reached) || echo    conquest server   : not reached
+findstr /c:"MatchMakingServiceProtocol::" "%SV%" >nul && (echo    multiplayer lobby : reached) || echo    multiplayer lobby : not reached
+
+echo.
+echo ---------------------------------------------------------------------
+if !RV! GEQ 25 (
+  echo VERDICT: a full online session - the server answered !RV! calls with
+  echo          !FAIL! failures.
+) else (
+  echo VERDICT: the client did not finish its online bootstrap this time.
+  echo          That is the known client-side crash - run PLAY.bat again.
+)
+echo ---------------------------------------------------------------------
+
+:end
+if /i not "%1"=="nopause" pause

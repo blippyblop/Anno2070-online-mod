@@ -1,0 +1,171 @@
+{
+ "notes": "Minimal, facts-only ARK table. The ids are asset GUIDs from the game's own item database; display names are deliberately neutralised so no game text is redistributed. Run tools/extract_ark_ids.py against your own install for the full table with real names.",
+ "record_layout": null,
+ "field_semantics": {
+  "w0": {
+   "name": "socket_quality",
+   "certainty": "high",
+   "values": {
+    "1": "A",
+    "2": "B",
+    "3": "C",
+    "4": "WorldPatron (not accepted by the ark deserializer)"
+   },
+   "note": "ItemSocketQuality dataset index. The ark content deserializers only accept 1..3; any other value makes the record be dropped."
+  },
+  "w1": {
+   "name": "socket_index",
+   "certainty": "high",
+   "note": "0-based ordinal of the socket inside the quality group. Counts come from the Ark asset ItemContainer.Sockets (A=1, B=2, C=3, WorldPatron=4)."
+  },
+  "w2": {
+   "name": "item_id",
+   "certainty": "certain",
+   "note": "32-bit asset GUID of an Item asset (CBaseItem::GetID returns [obj+0xc], which is the id the item DB was queried with). Not in the table -> CInvalidItem -> slot renders empty/unknown."
+  },
+  "w3": {
+   "name": "count",
+   "certainty": "high",
+   "note": "size of the CItemStack id vector (item copies in the stack). 1 for a normal socketed item; 0 means 'empty slot' and is skipped by both readers and by the SetArk_V1 merge."
+  }
+ },
+ "socket_layout": {
+  "source": "data/config/game/assets.xml, Template=Ark (GUID 10034 ark, 10084 ark_tycoons, 10095 ark_ecos, 10122 ark_techs, 10264 ark_father_techs, 50030 ark_father)",
+  "sockets_per_quality": {
+   "A": 1,
+   "B": 2,
+   "C": 3,
+   "WorldPatron": 4
+  }
+ },
+ "valid_ids": [
+  {
+   "id": 60353,
+   "name": "item-60353",
+   "quality": "C",
+   "socketable": true,
+   "source": "shipped item DB (id only)"
+  },
+  {
+   "id": 60359,
+   "name": "item-60359",
+   "quality": "C",
+   "socketable": true,
+   "source": "shipped item DB (id only)"
+  },
+  {
+   "id": 60364,
+   "name": "item-60364",
+   "quality": "C",
+   "socketable": true,
+   "source": "shipped item DB (id only)"
+  },
+  {
+   "id": 60396,
+   "name": "item-60396",
+   "quality": "B",
+   "socketable": true,
+   "source": "shipped item DB (id only)"
+  },
+  {
+   "id": 60412,
+   "name": "item-60412",
+   "quality": "B",
+   "socketable": true,
+   "source": "shipped item DB (id only)"
+  },
+  {
+   "id": 60530,
+   "name": "item-60530",
+   "quality": "A",
+   "socketable": true,
+   "source": "shipped item DB (id only)"
+  }
+ ],
+ "invalid_ranges": [
+  [
+   0,
+   1136
+  ],
+  [
+   399021,
+   4294967295
+  ]
+ ],
+ "starter_items": [
+  [
+   1,
+   0,
+   60530,
+   1
+  ],
+  [
+   2,
+   0,
+   60396,
+   1
+  ],
+  [
+   2,
+   1,
+   60412,
+   1
+  ],
+  [
+   3,
+   0,
+   60353,
+   1
+  ],
+  [
+   3,
+   1,
+   60359,
+   1
+  ],
+  [
+   3,
+   2,
+   60364,
+   1
+  ]
+ ],
+ "starter_items_alt": [
+  [
+   1,
+   0,
+   60136,
+   1
+  ],
+  [
+   2,
+   0,
+   60587,
+   1
+  ],
+  [
+   2,
+   1,
+   60488,
+   1
+  ],
+  [
+   3,
+   0,
+   60585,
+   1
+  ],
+  [
+   3,
+   1,
+   60487,
+   1
+  ],
+  [
+   3,
+   2,
+   60133,
+   1
+  ]
+ ]
+}
