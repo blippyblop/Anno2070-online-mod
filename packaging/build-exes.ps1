@@ -18,8 +18,15 @@ if (-not $py) {
 }
 Write-Host "python: $py"
 
-& $py -c "import PyInstaller" 2>$null
-if ($LASTEXITCODE -ne 0) {
+# Probe for PyInstaller. PowerShell 7 turns a native command's stderr into a
+# terminating error while $ErrorActionPreference is 'Stop' - and "module not
+# found" is exactly a stderr traceback - so the probe runs with 'Continue' and
+# the exit code decides (CI hit this, the local Windows PowerShell 5 did not).
+$ErrorActionPreference = 'Continue'
+& $py -c "import PyInstaller" *> $null
+$havePI = ($LASTEXITCODE -eq 0)
+$ErrorActionPreference = 'Stop'
+if (-not $havePI) {
     Write-Host 'installing pyinstaller...'
     & $py -m pip install --disable-pip-version-check --quiet pyinstaller
     if ($LASTEXITCODE -ne 0) { throw 'could not install pyinstaller' }
