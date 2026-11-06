@@ -24,6 +24,10 @@ import zipfile
 APP_NAME = "Anno 2070 - Local Online"
 FOLDER_NAME = "Anno2070Online"
 LAUNCHER = "Anno2070Online.exe"
+UNINSTALLER = "Uninstall-Anno2070Online.exe"
+# only our loader contains this string - Ubisoft's original does not, and that
+# is how the uninstaller tells the two apart
+LOADER_MARKER = b"upc_stub.log"
 
 GAME_CANDIDATES = [
     r"C:\Program Files (x86)\Steam\steamapps\common\Anno 2070",
@@ -139,6 +143,18 @@ def write_config(dst, name, game):
     return target
 
 
+def looks_like_ours(dll_path):
+    """True if this upc_r2_loader64.dll is ours and not Ubisoft's original."""
+    try:
+        with open(dll_path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                if LOADER_MARKER in chunk:
+                    return True
+    except OSError:
+        pass
+    return False
+
+
 def make_shortcut(exe_path, link_path, working_dir):
     ps = (
         "$W = New-Object -ComObject WScript.Shell; "
@@ -194,8 +210,19 @@ def main():
     if not os.path.isfile(loader):
         say("      ERROR: upc_r2_loader64.dll is missing from the installer")
         return 1
+    # keep Ubisoft's own DLL once so the uninstaller can put it back
+    target = os.path.join(game, "upc_r2_loader64.dll")
+    backup = target + ".original-backup"
+    if os.path.isfile(target) and not os.path.isfile(backup):
+        if not looks_like_ours(target):
+            try:
+                shutil.copy2(target, backup)
+                say("      kept the original loader as "
+                    "upc_r2_loader64.dll.original-backup")
+            except OSError:
+                pass
     try:
-        shutil.copy2(loader, os.path.join(game, "upc_r2_loader64.dll"))
+        shutil.copy2(loader, target)
     except OSError as exc:
         say(f"      ERROR: could not copy into the game folder: {exc}")
         say("      Close Anno 2070 and try again (or run as administrator).")
@@ -208,6 +235,7 @@ def main():
 
     say("[5/6] creating shortcuts")
     exe = os.path.join(dst, LAUNCHER)
+    uninstaller = os.path.join(dst, UNINSTALLER)
     desktop = os.path.join(os.path.expanduser("~"), "Desktop")
     made = 0
     if os.path.isdir(desktop):
@@ -216,6 +244,9 @@ def main():
                               "Microsoft", "Windows", "Start Menu", "Programs")
     if os.path.isdir(start_menu):
         made += make_shortcut(exe, os.path.join(start_menu, f"{APP_NAME}.lnk"), dst)
+        if os.path.isfile(uninstaller):
+            make_shortcut(uninstaller,
+                          os.path.join(start_menu, f"Uninstall {APP_NAME}.lnk"), dst)
 
     say("[6/6] done")
     say()
@@ -224,8 +255,10 @@ def main():
         say(" A shortcut was added to your Desktop and Start Menu.")
     say(f" Your name and settings live in: {cfg}")
     say()
-    say(" Nothing was added to the game's own files except the loader DLL, and")
-    say(" it can be removed by deleting upc_r2_loader64.dll from the game folder.")
+    say(" Nothing was added to the game's own files except the loader DLL.")
+    say(" To remove everything again: run")
+    say(f"   {uninstaller if os.path.isfile(uninstaller) else 'Uninstall ' + APP_NAME}")
+    say(" (or Start Menu > Uninstall " + APP_NAME + ")")
     if "--yes" not in sys.argv:
         try:
             input("\nPress Enter to close...")

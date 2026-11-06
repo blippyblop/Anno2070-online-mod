@@ -42,6 +42,7 @@ jobs:
           Compress-Archive -Path dist/Anno2070Online -DestinationPath dist/Anno2070Online-portable.zip
           $files = @(
             'dist/Anno2070Online-Setup.exe',
+            'dist/Uninstall-Anno2070Online.exe',
             'dist/Anno2070Online-portable.zip'
           )
           $lines = foreach ($f in $files) {
@@ -77,12 +78,30 @@ jobs:
           Write-Host 'frozen server came up'
           Stop-Process -Id $p.Id -Force
 
+      - name: Smoke-test the frozen uninstaller (no game needed)
+        shell: pwsh
+        run: |
+          # a frozen uninstaller must start, find its own runtime folder and
+          # report a dry run; it never touches a real installation here
+          $fake = Join-Path $env:RUNNER_TEMP 'fake-runtime'
+          New-Item -ItemType Directory -Force -Path (Join-Path $fake 'server') | Out-Null
+          Set-Content -Path (Join-Path $fake 'server/mimic_server.py') -Value '# fake server'
+          $out = & dist/Uninstall-Anno2070Online.exe --yes --dry-run --dir $fake --no-pause 2>&1 | Out-String
+          Write-Host $out
+          if ($LASTEXITCODE -ne 0) { throw "uninstaller exited with $LASTEXITCODE" }
+          if ($out -notmatch 'nothing was changed') { throw 'uninstaller dry run printed nothing useful' }
+          if (-not (Test-Path (Join-Path $fake 'server/mimic_server.py'))) {
+            throw 'uninstaller deleted a folder during a dry run'
+          }
+          Write-Host 'frozen uninstaller works'
+
       - name: Upload build artefacts
         uses: actions/upload-artifact@v4
         with:
           name: anno2070-online-windows
           path: |
             dist/Anno2070Online-Setup.exe
+            dist/Uninstall-Anno2070Online.exe
             dist/Anno2070Online-portable.zip
             dist/SHA256SUMS.txt
 
@@ -103,6 +122,12 @@ jobs:
             **Portable:** `Anno2070Online-portable.zip` is the same runtime
             unpacked - unzip anywhere and run `Anno2070Online.exe`.
 
+            **Uninstall:** run `Uninstall-Anno2070Online.exe` (it is also in the
+            Start Menu). It puts Ubisoft's original loader DLL back, keeps your
+            saved online state in `%LOCALAPPDATA%\Anno2070Online-backup`, and
+            removes the shortcuts. `--purge` throws the state away too.
+            Nothing in your savegames is touched.
+
             **Verify:** `SHA256SUMS.txt` has the hashes of both files.
 
             What works: online session, ARK item box, senate and World Council
@@ -114,5 +139,6 @@ jobs:
             Not affiliated with Ubisoft. Contains no game code, data or assets.
           files: |
             dist/Anno2070Online-Setup.exe
+            dist/Uninstall-Anno2070Online.exe
             dist/Anno2070Online-portable.zip
             dist/SHA256SUMS.txt

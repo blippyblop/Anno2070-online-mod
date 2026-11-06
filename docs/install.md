@@ -52,6 +52,7 @@ No Python is required.
 | path | what |
 |---|---|
 | `<game>\upc_r2_loader64.dll` | our loader — the only file placed in the game folder |
+| `<game>\upc_r2_loader64.dll.original-backup` | Ubisoft's original loader, kept so UNINSTALL can put it back |
 | `logs\server.log` | protocol log of the last session |
 | `logs\server.prev.log` | the session before that |
 | `server\state.json` | your saved online state: ARK items, elections, world events |
@@ -61,8 +62,31 @@ rules.
 
 ## Uninstall
 
-Delete `upc_r2_loader64.dll` from the game folder and delete this folder. The
-game returns to its normal (offline) behaviour.
+Run **`UNINSTALL.bat`** (PLAY.bat build) or **`Uninstall-Anno2070Online.exe`**
+(.exe build, also in the Start Menu), then confirm. It undoes only what this
+project did:
+
+1. stops a launcher or a local server that is still running (Anno 2070 itself is
+   never killed - a forced kill can truncate `Config\Engine.ini`)
+2. puts Ubisoft's original `upc_r2_loader64.dll` back from
+   `upc_r2_loader64.dll.original-backup`, which INSTALL.bat keeps before it
+   copies ours. If that backup does not exist (an install from before 0.1.2, or
+   a manual copy), our loader is deleted and you are told how to restore the
+   original: Steam > right click Anno 2070 > Properties > Installed files >
+   Verify integrity of game files. A DLL that is not ours is never touched.
+3. deletes `upc_stub.log` from the game folder
+4. keeps your online state in `%LOCALAPPDATA%\Anno2070Online-backup`, then
+   deletes the runtime folder and the shortcuts
+
+Your savegames are never touched - they are the game's own files.
+
+| uninstall everything, state included | `UNINSTALL.bat /purge` or `Uninstall-Anno2070Online.exe --purge` |
+| see what it would do, change nothing | `Uninstall-Anno2070Online.exe --dry-run` |
+| no questions (scripted) | `UNINSTALL.bat /yes` or `Uninstall-Anno2070Online.exe --yes` |
+
+Troubleshooting: it refuses to run while `Anno5.exe` is up (quit from the game's
+menu first). A file still locked afterwards means a virus scanner or the game is
+holding it - reboot and delete the folder by hand.
 
 ## Changing ports or address
 

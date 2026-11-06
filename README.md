@@ -57,11 +57,43 @@ retries the known 1-in-3 bootstrap crash, and prints a summary when you quit
 The game's own files are **not modified**: the loader DLL applies everything at
 run time and verifies the bytes it expects before touching anything.
 
+# Uninstall
+
+Same button for both builds - **`UNINSTALL.bat`** in the package folder, or
+**`Uninstall-Anno2070Online.exe`** (also in the Start Menu) for the .exe build.
+It undoes only what this project did:
+
+* stops a launcher/local server that is still running (your game is never killed
+  by force, and never your savegames)
+* puts Ubisoft's own `upc_r2_loader64.dll` back from the
+  `upc_r2_loader64.dll.original-backup` that INSTALL.bat keeps. If that backup is
+  missing (an install from before 0.1.2, or a hand-copied DLL) it deletes our
+  loader and tells you to use Steam's *Verify integrity of game files*. A DLL
+  that is not ours is never touched.
+* deletes our `upc_stub.log` from the game folder
+* keeps your online state (`state.json`, `config.ini`) in
+  `%LOCALAPPDATA%\Anno2070Online-backup`, then removes the folder and shortcuts
+
+```
+UNINSTALL.bat              ask, then do it (keeps your online state)
+UNINSTALL.bat /purge       ... and throw the state away too
+UNINSTALL.bat /yes         no questions
+Uninstall-Anno2070Online.exe --dry-run    show what it would delete, change nothing
+```
+
+The game is back to its normal, offline behaviour afterwards. If a file is still
+locked at the end, a virus scanner or the game is holding it: reboot and delete
+the folder by hand.
+
 # What is in this repository
 
 ```
+PLAY.bat              start the server and the game (the working way in)
+INSTALL.bat           one-time: put the loader next to Anno5.exe
+UNINSTALL.bat         undo all of it again (keeps your online state)
 config.ini            player name, game path, ports, options
-packaging/            launcher_app.py, setup_app.py, build-exes.ps1 (the exes are built from these)
+packaging/            launcher_app.py, setup_app.py, uninstall_app.py, build-exes.ps1
+                      (the exes are built from these)
 server/               the backend: SDK HTTP, notification websocket, RV/RMC (83 methods),
                       PRUDP framing, conquest HTTP
 loader/               our own upc_r2 client DLL (C source + prebuilt) - replaces the

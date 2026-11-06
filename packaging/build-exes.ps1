@@ -4,6 +4,8 @@
 #
 # Produces, in dist\:
 #   Anno2070Online\Anno2070Online.exe        the launcher (server bundled)
+#   Anno2070Online\Uninstall-Anno2070Online.exe  the uninstaller
+#   Uninstall-Anno2070Online.exe             standalone copy of the uninstaller
 #   Anno2070Online-Setup.exe                 the installer (payload embedded)
 #
 # Needs Python 3.8+ with pip; PyInstaller is installed if missing. The build is
@@ -58,6 +60,17 @@ Copy-Item -Force config.ini dist\Anno2070Online\config.ini
 Copy-Item -Force docs\known-issues.md dist\Anno2070Online\known-issues.md
 Copy-Item -Force loader\bin\upc_r2_loader64.dll dist\Anno2070Online\upc_r2_loader64.dll
 
+Write-Host '--- building the uninstaller (onefile)'
+# It is built before the payload is packed so it ends up inside the runtime
+# folder: the installer then only needs a Start Menu shortcut to it, and the
+# portable zip carries it too.
+if (Test-Path dist\Uninstall-Anno2070Online.exe) { Remove-Item -Force dist\Uninstall-Anno2070Online.exe }
+& $py -m PyInstaller --noconfirm --onefile --console --name Uninstall-Anno2070Online `
+    --distpath dist --workpath build --specpath build `
+    packaging\uninstall_app.py
+if ($LASTEXITCODE -ne 0) { throw 'uninstaller build failed' }
+Copy-Item -Force dist\Uninstall-Anno2070Online.exe dist\Anno2070Online\Uninstall-Anno2070Online.exe
+
 Write-Host '--- packing the payload'
 $payload = Join-Path $root 'build\payload.zip'
 if (Test-Path $payload) { Remove-Item -Force $payload }
@@ -79,4 +92,7 @@ Write-Host 'built:'
 Get-ChildItem dist | ForEach-Object { Write-Host ("  {0}" -f $_.Name) }
 Get-Item dist\Anno2070Online-Setup.exe | ForEach-Object {
     Write-Host ("  Anno2070Online-Setup.exe  {0:N0} KB" -f ($_.Length / 1KB))
+}
+Get-Item dist\Uninstall-Anno2070Online.exe | ForEach-Object {
+    Write-Host ("  Uninstall-Anno2070Online.exe  {0:N0} KB" -f ($_.Length / 1KB))
 }

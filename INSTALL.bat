@@ -6,7 +6,8 @@ rem  What it does:
 rem    1. reads config.ini (game path + player name)
 rem    2. finds Anno 2070 if [game] path is blank
 rem    3. checks that Anno5.exe is a build we know (prints the hash)
-rem    4. copies the loader DLL into the game folder
+rem    4. copies the loader DLL into the game folder, keeping Ubisoft's own
+rem       DLL as upc_r2_loader64.dll.original-backup for UNINSTALL.bat
 rem    5. creates a shortcut-free "PLAY.bat" workflow and checks Python
 rem
 rem  It never modifies the game's own files: the loader DLL sits next to
@@ -103,6 +104,14 @@ if not exist "loader\bin\upc_r2_loader64.dll" (
   goto :end
 )
 if exist "!GAMEDIR!\upc_r2_loader64.dll" (
+  rem keep Ubisoft's own DLL once, so UNINSTALL.bat can put it back
+  if not exist "!GAMEDIR!\upc_r2_loader64.dll.original-backup" (
+    findstr /m /c:"upc_stub.log" "!GAMEDIR!\upc_r2_loader64.dll" >nul 2>&1
+    if errorlevel 1 (
+      copy /y "!GAMEDIR!\upc_r2_loader64.dll" "!GAMEDIR!\upc_r2_loader64.dll.original-backup" >nul
+      echo       kept the original loader as upc_r2_loader64.dll.original-backup
+    )
+  )
   echo       replacing the existing loader
 )
 copy /y "loader\bin\upc_r2_loader64.dll" "!GAMEDIR!\upc_r2_loader64.dll" >nul
@@ -131,6 +140,7 @@ if defined PY (
 
 echo.
 echo Done. Next: run PLAY.bat.
+echo To remove everything again later: run UNINSTALL.bat.
 echo.
 
 
