@@ -25,6 +25,7 @@ SERVER_PY = os.path.join(HERE, "server", "mimic_server.py")
 MAX_ATTEMPTS = 3
 BOOTSTRAP_WAIT = 100          # seconds a client gets to finish its bootstrap
 MIN_RV_CALLS = 20             # a working session answers 25-71 calls
+FAST_FAIL_SECS = 60           # give up on a launch that is not online by then
 
 GAME_CANDIDATES = [
     r"C:\Program Files (x86)\Steam\steamapps\common\Anno 2070",
@@ -211,7 +212,20 @@ def _close_game_gracefully(timeout=25):
         except Exception:
             pass
         time.sleep(1)
-    return False
+    # The game ignores WM_CLOSE (measured: a plain taskkill does not end it), so
+    # a retry would otherwise launch a SECOND instance on top of a live one.
+    # Forcing here is safe: every automated run in this project ends with a
+    # forced kill and the game starts cleanly afterwards.
+    try:
+        subprocess.run(["taskkill", "/f", "/im", "Anno5.exe"], capture_output=True,
+                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        time.sleep(1.5)
+        out = subprocess.run(["tasklist", "/fi", "imagename eq Anno5.exe"],
+                             capture_output=True, text=True,
+                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        return "Anno5.exe" not in (out.stdout or "")
+    except Exception:
+        return False
 
 
 def launch(cfg_path):
@@ -264,6 +278,11 @@ def launch(cfg_path):
         for _ in range(BOOTSTRAP_WAIT):
             time.sleep(1)
             if game_proc.poll() is not None:
+                break
+            # A launch that has not reached the login burst by ~60 s never
+            # will: the client has already gone offline. Restarting early
+            # saves the player a 100 s wait on the ~1-in-3 bad launches.
+            if _ >= FAST_FAIL_SECS and rv_calls(log) < MIN_RV_CALLS:
                 break
         # a live process is not a live session: the client can sit in the menu
         # having given up (5-15 calls). Measured sessions that work answer

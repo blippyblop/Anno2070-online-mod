@@ -3,18 +3,34 @@
 Honest list, newest first. Symptoms are described the way you will see them, not
 the way the code sees them.
 
-## 1. The game sometimes crashes during startup (about 1 launch in 3)
+## 1. About 6 launches in 10 do not come up online (they no longer crash)
 
-**Symptom:** the game window appears and disappears during the first minute, or
-it shows "the connection to the server has been lost" and exits.
+**Symptom:** the game opens, and about 36 s later it settles at the menu in
+offline mode. Earlier builds actually *crashed* here; since 0.1.1 the client
+stays alive and simply abandons its own login.
 
-**Cause:** a lifetime bug in the game's own websocket client. When a websocket
-event arrives before its endpoint finished attaching, it jumps through a null
-pointer (`Anno5.exe+0x1362214`). The server cannot prevent this; it is a race
-inside the client.
+**Cause:** a race inside the game's own network client. At a fixed ~36 s after
+it starts, it tears down and rebuilds its connection state; if that lands while
+its login exchange is running, the login is cancelled. The server's replies are
+byte-identical between a launch that works and one that does not, and the reply
+arrives *after* the client has already given up, so this cannot be fixed from
+the server side.
 
-**What this package does:** `PLAY.bat` waits 100 s and relaunches the game up to
-three times. In practice a session starts within one or two tries.
+**What 0.1.1 changed:** the crash that used to accompany this is gone. The
+client's queue push into a destroyed `CBackEndServiceImpl` pool is now skipped
+(that was the `0xc0000005` write to `+8`), and a loader hook that was storing a
+garbage vtable pointer on every boot has been disabled. Failed launches now log
+
+```
+mgwaq: pool destroyed (CS=NULL) - skipped the queue push that would have crashed
+```
+
+and produce no exception at all.
+
+**What to do:** just start the game again. Measured today: 7 of 18 launches
+reached a full session, so one or two restarts is the normal cost. The launcher
+retries automatically up to 3 times (it force-closes a launch that never
+connected, because the game ignores a close request).
 
 ## 2. Conquest and multiplayer are not reachable yet
 

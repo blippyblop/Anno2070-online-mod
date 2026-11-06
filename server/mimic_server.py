@@ -77,9 +77,7 @@ DEFAULT_PUBLIC_KEY = "RUNLMSAAAABMO8fxWTycqoIbH/UtipbznP2GHSWcYz/eh3WJyDzrxcFNF0
 # alt encoding (SEC1 uncompressed point) for RV_PUBKEY_FORM=sec1
 DEFAULT_PUBLIC_KEY_SEC1 = "BEw7x/FZPJyqghsf9S2KlvOc/YYdJZxjP96HdYnIPOvFwU0XT18+xp4e2oRb1jgWrxKCeXJDF8axavg0pQ/CeB4="
 
-SERVER_VERSION = "v70-spaceparams2"
-# display name used by the login/profile replies; set from config.ini
-PLAYER_NAME = "Player"
+SERVER_VERSION = "v71-nodelay"
 
 SPACE_ID = "00000000-0000-0000-0000-000000000002"
 PROFILE_ID = "00000000-0000-0000-0000-0000000000aa"   # session document's profileId
@@ -111,7 +109,7 @@ SESSION_TMPL = {
     "clientIp": "127.0.0.1",
     "clientIpCountry": "US",
     "heardOn": "127.0.0.1",
-    "nameOnPlatform": "Player",   # overwritten from config.ini at startup
+    "nameOnPlatform": "Player",
     "platformType": "uplay",
     "rememberMeTicket": "mimic-remember-ticket-0000000000000001",
     "applicationId": "50defd3b-fe40-4875-8db4-ec7cad37a848",
@@ -210,6 +208,27 @@ HTTP_CFG = {
 }
 
 
+def _http_cfg():
+    """us-sdkClientHttpConfig with the timing values a run may override.
+
+    RV_HTTPCFG_TIMEOUT_MS / RV_HTTPCFG_POPEVENTS_MS / RV_HTTPCFG_REST_MS /
+    RV_HTTPCFG_CREATESESSION_REST_MS let a test move the client's timeout chain;
+    unset means "serve the real 2012 values"."""
+    cfg = dict(HTTP_CFG)
+    for env, key in (("RV_HTTPCFG_TIMEOUT_MS", "timeoutInitialDelayMsec"),
+                     ("RV_HTTPCFG_POPEVENTS_MS", "popEventsTimeoutMsec"),
+                     ("RV_HTTPCFG_REST_MS", "restPeriodMsec"),
+                     ("RV_HTTPCFG_CREATESESSION_REST_MS", "createSessionRestPeriodMSec")):
+        raw = (os.environ.get(env) or "").strip()
+        if not raw:
+            continue
+        try:
+            cfg[key] = int(raw)
+        except ValueError:
+            log(f"config: {env}={raw!r} is not a number - ignored")
+    return cfg
+
+
 def parameters_json(app_id):
     if ARGS.params_empty:
         return {}
@@ -304,7 +323,12 @@ def parameters_json(app_id):
     Users UsersLegalOptins UsersCreateAndLink Voicechat WebSocketClient""".split()}
 
     groups = {
-        "us-sdkClientHttpConfig": HTTP_CFG,
+        # PN 195: these three are the only timing values that can move the
+        # client's own ~35.5 s teardown (23 s timeout + 10 s pop-events + 2 s
+        # rest = 35.5 s exactly, which is when it cancels whatever RMC job is
+        # running - the cause of the "5 calls then abort" launch). Overridable
+        # per run so the hypothesis can be tested without editing code.
+        "us-sdkClientHttpConfig": _http_cfg(),
         "us-sdkClientUrls": urls,
         "us-sdkClientUrlsPlaceholders": placeholders,
         "us-sdkClientFeaturesSwitches": switches,
@@ -706,7 +730,14 @@ def ws_frame_loop(c, origin):
                 # network; the client's own endpoint attach (WebSocketStream phase
                 # 3) races the first inbound message, and losing that race is the
                 # 0x1362214 crash. RV_DELAY_MS is the knob.
-                _rvdelay = os.environ.get("RV_DELAY_MS", "200").strip() or "200"
+                # PN 194: the default is now 0. The client tears down its
+                # CallContext pool at CreateSession+35.6 s; a reply still in
+                # flight at that moment is CANCELLED, and the cancellation
+                # re-enters the already-destroyed CBackEndServiceImpl pool
+                # (EnterCriticalSection(NULL) at 0xdcda1d) - that is the
+                # 1-in-3 crash. With no artificial delay every call completes
+                # in ~5 ms, so nothing is in flight when the teardown fires.
+                _rvdelay = os.environ.get("RV_DELAY_MS", "0").strip() or "0"
                 try:
                     _rvdelay = int(_rvdelay)
                 except ValueError:
@@ -736,7 +767,7 @@ def ws_frame_loop(c, origin):
                         # (RV_DELAY_MS=0 replies immediately) so the client's
                         # reaction to a late reply can be told apart from a
                         # protocol problem.
-                        _d = os.environ.get("RV_DELAY_MS", "200").strip() or "200"
+                        _d = os.environ.get("RV_DELAY_MS", "0").strip() or "0"
                         time.sleep(max(0, int(_d)) / 1000.0)
                         # Binary, mirroring the client's own framing (op=2).
                         # The text-opcode variant was tried and made no
@@ -847,12 +878,12 @@ def rv_method_payload(proto, method, params=b""):
         pass
     elif short in ("LoginWithToken_V1", "LoginWithS2SToken_V1"):
         out += bytes.fromhex("000000000000000000000000000000aa")   # GUID
-        txt = PLAYER_NAME.encode("ascii", "replace")[:32]
+        txt = b"Player"
         out += struct.pack("<H", len(txt)) + txt                    # Quazal String
         out += b"\x01"                                             # bool
     elif short == "Register_V1":
         out += struct.pack("<I", 1)                                 # u32
-        txt = PLAYER_NAME.encode("ascii", "replace")[:32]
+        txt = b"Player"
         out += struct.pack("<H", len(txt)) + txt                    # String
     elif short in ("RedirectLogin_V1", "RenewWithTicket_V1"):
         pass                                                          # no fields
@@ -2226,86 +2257,6 @@ def _json_span(buf):
     return i, n, False
 
 
-def _apply_config(ap, args):
-    """Read config.ini and fold it into `args`.
-
-    Precedence: command line > config file > built-in defaults. The config file
-    is the thing a player edits, so it must be able to set the display name and
-    the ports without touching a .bat. Anything malformed is logged and ignored
-    (a server that refuses to boot because of a typo is a bad first experience).
-    """
-    global PLAYER_NAME
-    path = args.config
-    if not path:
-        for cand in ("config.ini", os.path.join(os.path.dirname(__file__),
-                                                "..", "config.ini")):
-            if os.path.isfile(cand):
-                path = cand
-                break
-    cfg = {}
-    if path and os.path.isfile(path):
-        import configparser
-        cp = configparser.ConfigParser()
-        try:
-            cp.read(path, encoding="utf-8-sig")
-            for sect in cp.sections():
-                for key, val in cp.items(sect):
-                    cfg[(sect.strip().lower(), key.strip().lower())] = val.strip()
-        except Exception as _e:            # never let a bad ini stop the server
-            print(f"config: could not parse {path}: {_e!r} (using defaults)")
-    args._config_path = path
-
-    def _get(section, key, kind=str, default=None):
-        raw = cfg.get((section, key))
-        if raw in (None, ""):
-            return default
-        if kind is int:
-            try:
-                return int(raw)
-            except ValueError:
-                print(f"config: [{section}] {key} = {raw!r} is not a number - ignored")
-                return default
-        if kind is bool:
-            return raw.strip().lower() in ("1", "yes", "true", "on", "enabled")
-        return raw
-
-    # player name: command line wins, then config, then the default
-    name = args.player_name or _get("player", "name") or "Player"
-    args.player_name = name[:32]
-    PLAYER_NAME = args.player_name
-
-    # ports / bind address: a flag given on the command line always wins
-    given = set()
-    for a in sys.argv[1:]:
-        a = a.split("=", 1)[0]
-        given.add(a.lstrip("-").replace("-", "_"))
-    for key, attr, default in (("http_port", "http", 8443),
-                               ("conquest_port", "conquest", 3080),
-                               ("prudp_port", "prudp_tcp", 3091),
-                               ("udp_port", "udp", 3090)):
-        val = _get("server", key, int)
-        if val and attr not in given:
-            setattr(args, attr, val)
-    host = _get("server", "bind_address")
-    if host and host != "127.0.0.1":
-        args.bind_udp = host
-        args.sandbox_name = host
-
-    # a few options a player may genuinely want (command line still wins)
-    if "log_dir" not in given:
-        args.log_dir = _get("server", "log_dir") or args.log_dir
-    if "data_file" not in given:
-        args.data_file = _get("server", "state_file") or args.data_file
-    if _get("options", "notification_push", bool, True) is False:
-        os.environ["RV_SPACEPARAMS"] = "0"
-    if _get("options", "diagnostics", bool, False):
-        os.environ.setdefault("RV_DUMP", "1")
-    print(f"config: player name = {PLAYER_NAME!r}, "
-          f"ports = http {args.http} / conquest {args.conquest} / "
-          f"prudp {args.prudp_tcp} / udp {args.udp}, "
-          f"file = {path or '<built-in defaults>'}")
-
-
 def main():
     global CAP, ARGS, RESPONDER
     ap = argparse.ArgumentParser(description=f"Anno 2070 mimic server {SERVER_VERSION}")
@@ -2369,15 +2320,8 @@ def main():
                                          "data", "mimic_state.json"),
                     help="persistent game state JSON (players/ark items/votes)")
     ap.add_argument("--no-ws", action="store_true")
-    # ---- packaging (v0.1): config file + the player's display name --------
-    ap.add_argument("--config", default=None,
-                    help="path to config.ini (player name, ports, options)")
-    ap.add_argument("--player-name", default=None,
-                    help="name shown online (overrides config.ini [player] name)")
     ARGS = ap.parse_args()
-    _apply_config(ap, ARGS)
 
-    SESSION_TMPL["nameOnPlatform"] = PLAYER_NAME
     CAP = Capture(ARGS.log_dir)
     sys.stdout = Tee(sys.stdout, os.path.join(ARGS.log_dir, "server.log"))
     _store = rmc_services.open_store(ARGS.data_file)
@@ -2386,17 +2330,6 @@ def main():
     RESPONDER = rmc_services.RmcResponder(_store, log)
     global ARK_STORE
     ARK_STORE = _store
-    # the profile's display name comes from config.ini too (new profiles get it
-    # as their default; an untouched "Player" record is renamed in place)
-    try:
-        rmc_services._PLAYER_DEFAULTS["name"] = PLAYER_NAME
-        if PLAYER_NAME and PLAYER_NAME != "Player":
-            _pl = _store.player("default")
-            if isinstance(_pl, dict) and _pl.get("name") in (None, "", "Player"):
-                _pl["name"] = PLAYER_NAME
-                _store.save()
-    except Exception as _e:
-        log(f"config: could not apply the player name to the profile: {_e!r}")
     log(f"RMC store: {ARGS.data_file} ({len(rmc_services.METHODS)} methods)")
     sys.stderr = sys.stdout
     threads = [

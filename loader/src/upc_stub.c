@@ -5292,7 +5292,18 @@ static void cmgr_probes_install(void)
         probe_log("connmgr probes: off (UPC_CONNMGR=0)");
         return;
     }
-    hook_install("connmgr m0", 0x1360e00u, e0, 17u, &g_cmgr0_tramp, (void *)cmgr0_hook);
+    /* PN 194: THIS HOOK MUST STAY OFF. Its 17 displaced bytes contain
+     * `lea rax,[rip+0x2e8087]` (the vtable load at 0x1360e0a) followed by
+     * `mov [rcx],rax`. Copied into a VirtualAlloc'd trampoline, that lea
+     * resolves against the TRAMPOLINE, so every boot stored a garbage vtable
+     * pointer on the rdv::ConnectionManager object - a nondeterministic crash
+     * waiting to happen. Probes must not change semantics; this one did. */
+    if (GetEnvironmentVariableA("UPC_CONNMGR_M0", dis, sizeof(dis)) > 0 && dis[0] == '1') {
+        hook_install("connmgr m0", 0x1360e00u, e0, 17u, &g_cmgr0_tramp, (void *)cmgr0_hook);
+    } else {
+        probe_log("connmgr m0 probe: off (displaced bytes hold a RIP-relative "
+                  "lea - the hook corrupts the vtable; UPC_CONNMGR_M0=1 to force)");
+    }
     hook_install("connmgr m1", 0x1361020u, e1, 20u, &g_cmgr1_tramp, (void *)cmgr1_hook);
     hook_install("connmgr m2", 0x13612c0u, e2, 15u, &g_cmgr2_tramp, (void *)cmgr2_hook);
 }
@@ -5427,10 +5438,31 @@ static void *__cdecl mgwacb_hook(void *a, void *b, void *c, void *d)
     return ((ci_fn)g_mgwacb_tramp)(a, b, c, d);
 }
 
+static int g_mgwaq_dead = 0;
+
 __attribute__((noinline))
 static void *__cdecl mgwaq_hook(void *self, void *ctx, void *c, void *d)
 {
     unsigned code = 0xFFFFFFFFu, kind = 0xFFFFFFFFu;
+    /* PN 194 (crash fix): FUN_140dcd9f0 takes the CallContext POOL (embedded at
+     * CBackEndServiceImpl+0x50) and enters its CRITICAL_SECTION at +0x2d. When
+     * the service has been destroyed the pool's first qword (the CS pointer) is
+     * NULL, and the call becomes EnterCriticalSection(NULL) -> the 0xc0000005
+     * write to +8 (0xdcda1d) that kills ~1 launch in 3.
+     *
+     * [pool] == NULL is a UNIQUE post-destruction signature: only the teardown
+     * path writes it (0x13454b0, reached from FUN_140dcd890), and it is set at
+     * construction. A live-but-empty pool has begin == end == 0 while the CS
+     * pointer is still valid, so this test can never mask a real queue push.
+     * Skipping is correct: there is no service left to notify. */
+    if (self && safe_readable(self, 8) && *(void **)self == NULL) {
+        if (g_mgwaq_dead < 5) {
+            g_mgwaq_dead++;
+            probe_log("mgwaq: pool destroyed (CS=NULL) - skipped the queue push "
+                      "that would have crashed at 0xdcda1d");
+        }
+        return NULL;
+    }
     if (self) g_mgwa_impl = self;
     if (ctx && safe_readable(ctx, 0x60)) {
         code = *(unsigned *)((char *)ctx + 0x14);
