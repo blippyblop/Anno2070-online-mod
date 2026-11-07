@@ -44,7 +44,18 @@ Fixed
 - **`StatsEntry` is `u32,u32,u32,u64,u64,u64` (36 B), not six u32** - corrected
   in the docs; the key space is still undecoded, so `GetStats_V1` stays empty.
 
+Fixed
+- **An install update no longer wipes the save.** `server/state.json` lives
+  inside the folder an update replaces; `packaging/update-install.ps1` now parks
+  `state.json` + `.bak` first and puts them back, and the procedure backs up
+  everything it touches.
+
 Added
+- **Mail badge with a real count.** `MailServiceProtocol::GetMailCount_V1`
+  (polled once per login) reported an empty document; it now returns the real
+  mailbox - total and unread, from the same map `SetInfoMailRead_V1` flips - so
+  the event's intro mail shows as unread. `UploadMail_V1` stores what the client
+  reports instead of discarding it.
 - **Events send mail and unlock achievements.** A new event puts that chapter's
   own `InitialMail` id in the mailbox (real client text: `1005860` Atomic
   Terror, `1005939` Eden, `7111160` Global Distrust, `7211011` Nordamark,
@@ -66,6 +77,12 @@ Added
   Windows), so two servers answered the same client and overwrote each other's
   saved state - the classic "my vote disappeared". Binding now fails loudly with
   a message naming the cause, and `SO_EXCLUSIVEADDRUSE` is set on Windows.
+- **A save can no longer fail on key types.** Adding an int mail id to a
+  mailbox whose keys came off disk as strings made `json.dump(sort_keys=True)`
+  raise `TypeError`, and the whole save was lost (seen live: three
+  "save failed" lines and a lost event roll). Integer-keyed maps are normalised
+  on load and `Store.save` falls back to an unsorted dump rather than dropping
+  the document.
 - **The event rotation no longer clears a fresh state.** Rolling from "no day
   key yet" to today's chapter wiped the mission records of a session that had
   already completed missions; the clear now only happens when a *previous*
