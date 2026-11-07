@@ -25,7 +25,7 @@ $backup = Join-Path $game ("_backup-before-update-" + $stamp + ".zip")
 $stage = Join-Path $env:TEMP 'annoupdate'
 
 # ---- 1. back up everything this update may overwrite ---------------------
-$names = @('PLAY.bat','PROGRESS.bat','INSTALL.bat','UNINSTALL.bat','config.ini',
+$names = @('PLAY.bat','PROGRESS.bat','SELFTEST.bat','INSTALL.bat','UNINSTALL.bat','config.ini',
            'README.md','VERSION','LICENSE')
 $present = @()
 foreach ($n in $names) { if (Test-Path (Join-Path $game $n)) { $present += (Join-Path $game $n) } }
@@ -68,7 +68,7 @@ foreach ($n in $parked) {
     Copy-Item -Force (Join-Path $saveDir $n) (Join-Path $game ('server\' + $n))
 }
 if ($parked.Count -gt 0) { Write-Output ('save   : kept ' + ($parked -join ', ')) }
-foreach ($n in @('PLAY.bat','PROGRESS.bat','INSTALL.bat','UNINSTALL.bat','README.md',
+foreach ($n in @('PLAY.bat','PROGRESS.bat','SELFTEST.bat','INSTALL.bat','UNINSTALL.bat','README.md',
                  'VERSION','LICENSE','READ-ME-FIRST.txt')) {
     $from = Join-Path $src $n
     if (Test-Path $from) { Copy-Item -Force $from (Join-Path $game $n) }

@@ -53,6 +53,18 @@ findstr /c:"CONQ-HTTP <-" "%SV%" >nul && (echo    conquest server   : reached) |
 findstr /c:"MatchMakingServiceProtocol::" "%SV%" >nul && (echo    multiplayer lobby : reached) || echo    multiplayer lobby : not reached
 
 echo.
+if /i "%~1"=="selftest" (
+  set "TPY="
+  where python >nul 2>&1 && set "TPY=python"
+  if not defined TPY if exist "%LOCALAPPDATA%\Programs\Python\Python310\python.exe" set "TPY=%LOCALAPPDATA%\Programs\Python\Python310\python.exe"
+  if defined TPY (
+    "!TPY!" "%~dp0server\selftest.py"
+  ) else (
+    echo python not found - cannot run the self-test
+  )
+  goto :verdict
+)
+
 echo [ saved progress ]
 set "SPY="
 where python >nul 2>&1 && set "SPY=python"
@@ -80,6 +92,7 @@ if !RV! GEQ 25 (
   echo VERDICT: the client did not finish its online bootstrap this time.
   echo          That is a race inside the game's own client - run PLAY.bat again.
 )
+:verdict
 echo ---------------------------------------------------------------------
 goto :end
 
