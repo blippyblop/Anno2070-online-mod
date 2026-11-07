@@ -63,13 +63,19 @@ putting a real date on it, and echoing the mission GUIDs the player solved**.
 
 ## Next steps, in payoff order
 
-1. **Rewards that land in the ARK.** The mission asset names a `Reward` GUID
-   (e.g. `1114914`), but it is *not* an ArkItem id: the ARK record needs
-   `{socket_quality 1-3, socket_index, item_id, count}` and the client drops
-   anything whose item id it does not know. Until those GUIDs are resolved to
-   real item ids (`tools/ark_item_ids.json` is the oracle), a mission pays
-   reputation only - deliberately, because a bogus record renders as an empty
-   slot and looks broken.
+1. **Rewards that land in the ARK - done for the seven that are real items.**
+   The mission -> reward link is not in the mission asset at all: it is the
+   achievement table (`patch8.rda:data/config/questconfig/achievements.xml`,
+   `CompleteWorldEventNNMissionMM` -> `<Rewards><Item><Reward>GUID`). Of the 15
+   reward GUIDs, 8 are profile cosmetics (`ProfileTitle`, `ProfilePortrait`, a
+   decoration building) and can never be an ArkItem; the other 7 are real
+   `ConstructionPlanItem` / `BuildingUpgradeGlobal` assets (`7001000-7001004`,
+   `7111101-7111103`) and are now granted:
+   * into the first free slot **of the item's own quality group** (A/B/C are
+     separate - the client refuses a mismatched slot);
+   * never over an item the player placed; when the group is full only one of
+     our own seed items or an earlier mission reward may be replaced;
+   * `RV_ARK_REWARDS=0` disables the grants.
 2. **`UploadWorldEventTemplate_V1`**: store the raw bytes instead of the size.
    If a client path ever uploads its template table, that hands us ground truth
    for the twelve undecoded fields.

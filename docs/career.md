@@ -13,7 +13,7 @@ The client's profile has a **Reputation** page (`MainMenuPlayerProfile`, tab
 |---|---|---|
 | `GetReputationPoints_V1` | `map<u32,u32>` (key -> points) | the player's real reputation map: +50 per senate/World Council vote, +50/+150/+300 per solved world-event mission (add-only) |
 | `AreReputationPointsMissing_V1` | one bool, request carries the key | `0` (present) once the key has points, else `1` |
-| `GetStats_V1` | `u32 count` + N x `StatsEntry` (6 x u32, meanings unproven) | empty list - deliberately, see below |
+| `GetStats_V1` | `u32 count` + N x `StatsEntry` = `u32,u32,u32,u64,u64,u64` (36 B: 3 key words + 3 counters) | empty list - deliberately, see below |
 | `GetWorldStats_V1` | `u32 version` + list of `StatsEntry` | empty |
 
 `Vote_V1` itself is a **void** reply: nothing about the "+50" can travel with
@@ -24,7 +24,9 @@ reload): the client reads the profile once per login.
 
 ## Why `GetStats_V1` stays empty
 
-`StatsEntry` is 36 bytes of six u32s whose *meaning is not decoded* (only the
+`StatsEntry` is 36 bytes: three u32 **key words** plus three u64 **counters**
+(proven from the client's own reader/writer; it is *not* six u32), and the
+key space and counter meanings are still not decoded (only the
 widths and order are proven, `decomp/batch/step4_readers/PROFILE-UNKNOWN.md`).
 Inventing values there risks a Statistics page full of nonsense, which looks
 more broken than an empty page. The honest order of work is:
@@ -36,6 +38,16 @@ more broken than an empty page. The honest order of work is:
 3. if the page is still empty while the map is non-empty, the page is reading
    `GetStats_V1`/`GetWorldStats_V1` and the row semantics must be decoded from
    the client's own writer before we fill it.
+
+## The bug that was making the page stay empty (fixed 2026-11-07)
+
+`AreReputationPointsMissing_V1` was answered **per key**: with one Tycoon vote
+(`reputation = {1: 50}`) the client's first probe (faction 0, Eco) got
+"missing", concluded the server had nothing for it and kept its own local zero.
+Presence is a property of the profile, so it is now answered once for the
+profile, and `GetReputationPoints_V1` serves **all three factions** (the two the
+player has not earned read 0) so the panels draw empty bars instead of blank
+panels.
 
 ## What is guaranteed today
 

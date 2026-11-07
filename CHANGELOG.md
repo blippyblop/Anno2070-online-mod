@@ -35,7 +35,21 @@ Fixed
   today's event. `RV_WORLD_EVENT_PERIOD_DAYS`-style pinning is
   `period_days=0` for A/B runs.
 
+Fixed
+- **Career page: the presence probe.** `AreReputationPointsMissing_V1` answered
+  per faction, so a player whose points were in Tycoon got "missing" for Eco,
+  and the client kept its local zero. Presence is now answered for the profile,
+  and `GetReputationPoints_V1` serves all three factions (earned and 0) so the
+  panels render.
+- **`StatsEntry` is `u32,u32,u32,u64,u64,u64` (36 B), not six u32** - corrected
+  in the docs; the key space is still undecoded, so `GetStats_V1` stays empty.
+
 Added
+- **World-event missions grant their real ARK items** where the shipped reward
+  is an item at all: the mission->reward link is the achievement table, 7 of the
+  15 rewards are DLC `ConstructionPlanItem`/`BuildingUpgradeGlobal` assets, and
+  they are allocated into a matching-quality slot (never over the player's own
+  items, only over our seed items or an earlier mission reward).
 - **`state_report.py` + a "saved progress" section in PROGRESS.bat.** After a
   session the player sees the career points, the ARK box socket by socket, both
   vote panels (own vote + counted votes), the event of the day and the missions

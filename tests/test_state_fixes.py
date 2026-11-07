@@ -121,7 +121,8 @@ def test_vote_reputation(tmp):
     reopened = R.open_store(path)                     # a real restart
     wire = map_of(body_of(PROFILE, "GetReputationPoints_V1", reopened))
     check("GetReputationPoints_V1 serves it after a restart",
-          wire == {CV.FACTION_TYCOON: CV.VOTE_REWARD}, wire)
+          wire == {CV.FACTION_ECO: 0, CV.FACTION_TYCOON: CV.VOTE_REWARD,
+                   CV.FACTION_TECH: 0}, wire)
     check("AreReputationPointsMissing_V1 is now false",
           body_of(PROFILE, "AreReputationPointsMissing_V1", reopened,
                   le32(CV.FACTION_TYCOON))[:1] == b"\x00")
@@ -130,7 +131,8 @@ def test_vote_reputation(tmp):
     again = R.open_store(path)
     check("a second vote adds up",
           map_of(body_of(PROFILE, "GetReputationPoints_V1", again))
-          == {CV.FACTION_TYCOON: 2 * CV.VOTE_REWARD})
+          == {CV.FACTION_ECO: 0, CV.FACTION_TYCOON: 2 * CV.VOTE_REWARD,
+              CV.FACTION_TECH: 0})
 
 
 def test_legacy_reputation_list(tmp):
@@ -220,6 +222,85 @@ def test_mission_payout(tmp):
     check("Chapter is the one the rotation picked",
           doc["b"] == chapter and CE.mission_info(3054014)["chapter"] in
           [c[0] for c in CE.WORLD_EVENT_CHAPTERS])
+
+
+def test_career_presence(tmp):
+    print("the reputation document answers for the whole profile")
+    path = os.path.join(tmp, "career.json")
+    store = R.open_store(path)
+    payload(VOTING, "Vote_V1", store, le32(0) + le32(CV.FACTION_TYCOON))
+    rep = map_of(body_of(PROFILE, "GetReputationPoints_V1", store))
+    check("all three factions are served once any is earned",
+          rep == {0: 0, 1: CV.VOTE_REWARD, 2: 0}, rep)
+    for faction in CV.FACTIONS:
+        flag = body_of(PROFILE, "AreReputationPointsMissing_V1", store, le32(faction))
+        check("faction %d reports present" % faction, flag[:1] == b"\x00", flag)
+    fresh = R.open_store(os.path.join(tmp, "career-empty.json"))
+    check("a profile with no reputation still reports missing",
+          body_of(PROFILE, "AreReputationPointsMissing_V1", fresh, le32(0))[:1] == b"\x01")
+    check("and serves an empty map",
+          map_of(body_of(PROFILE, "GetReputationPoints_V1", fresh)) == {})
+
+
+def test_ark_rewards():
+    print("a mission puts its ARK reward in a matching socket")
+    store = R.Store(None)
+    CE.event_for_day(store.state.setdefault("worldEvent", {}))
+    store.player("default")["arkItems"] = [{"a": 1, "b": 0, "c": 60530, "d": 1}]
+
+    def solve(guid):
+        return R.respond_payload(WORLD, "CompleteMission_V1", store=store,
+                                 body=le32(guid) + b"\x06\x00Player\x00")
+
+    solve(3054107)                       # Sentinel Upgrade 1, quality C
+    box = store.player("default")["arkItems"]
+    check("quality C reward went to C0",
+          {"a": 3, "b": 0, "c": 7001000, "d": 1}.items() <=
+          [i for i in box if i.get("c") == 7001000][0].items(), box)
+    solve(3054108)                       # Upgrade 2 (C) + Upgrade 3 (A)
+    box = store.player("default")["arkItems"]
+    check("the second C reward took C1",
+          any(i.get("c") == 7001001 and i.get("b") == 1 for i in box), box)
+    check("the A reward is skipped while the player's own A0 is occupied",
+          not any(i.get("c") == 7001002 for i in box), box)
+    check("the player's own item is still there",
+          any(i.get("c") == 60530 for i in box), box)
+
+    # an empty A socket takes the A reward
+    free_a = R.Store(None)
+    CE.event_for_day(free_a.state.setdefault("worldEvent", {}))
+    free_a.player("default")["arkItems"] = []
+    R.respond_payload(WORLD, "CompleteMission_V1", store=free_a,
+                      body=le32(3054106) + b"\x06\x00Player\x00")
+    check("an empty A0 takes the A reward",
+          free_a.player("default")["arkItems"] == [
+              {"a": 1, "b": 0, "c": 7001003, "d": 1, "src": "mission"}],
+          free_a.player("default")["arkItems"])
+
+    # a full box: only our seed items may be replaced, never the player's
+    full = R.Store(None)
+    CE.event_for_day(full.state.setdefault("worldEvent", {}))
+    full.player("default")["arkItems"] = [
+        {"a": 1, "b": 0, "c": 60530, "d": 1, "src": "seed"},
+        {"a": 3, "b": 0, "c": 111, "d": 1},          # the player's own
+        {"a": 3, "b": 1, "c": 222, "d": 1},          # the player's own
+        {"a": 3, "b": 2, "c": 333, "d": 1},          # the player's own
+    ]
+    R.respond_payload(WORLD, "CompleteMission_V1", store=full,
+                      body=le32(3054107) + b"\x06\x00Player\x00")
+    box = full.player("default")["arkItems"]
+    check("a full group of the player's items is never overwritten",
+          not any(i.get("c") == 7001000 for i in box), box)
+
+    os.environ["RV_ARK_REWARDS"] = "0"
+    off = R.Store(None)
+    CE.event_for_day(off.state.setdefault("worldEvent", {}))
+    off.player("default")["arkItems"] = []
+    R.respond_payload(WORLD, "CompleteMission_V1", store=off,
+                      body=le32(3054107) + b"\x06\x00Player\x00")
+    os.environ.pop("RV_ARK_REWARDS", None)
+    check("RV_ARK_REWARDS=0 disables the grant",
+          off.player("default")["arkItems"] == [], off.player("default")["arkItems"])
 
 
 def test_stats_capped():
@@ -360,6 +441,8 @@ def main():
         test_legacy_reputation_list(tmp)
         test_council_vote_survives(tmp)
         test_mission_payout(tmp)
+        test_career_presence(tmp)
+        test_ark_rewards()
         test_stats_capped()
         test_day_rotation()
         test_state_file_is_shared(tmp)

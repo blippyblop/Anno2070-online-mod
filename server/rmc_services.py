@@ -268,11 +268,25 @@ def _migrate_state(state):
     # an older state file stored the reputation map as a *list*; writing to it
     # then raised IndexError inside SetReputationPoints and the client's points
     # were dropped (it saw a clean void reply and believed they were saved)
+    # the six ARK items a fresh profile is seeded with are ours, not the
+    # player's: tag them so a mission reward may replace one when every socket
+    # of its group is full (see _grant_ark_reward)
+    seed_ids = {(1, 0, 60530), (2, 0, 60396), (2, 1, 60412),
+                (3, 0, 60353), (3, 1, 60359), (3, 2, 60364)}
     players = state.get("players")
     if isinstance(players, dict):
         for doc in players.values():
             if not isinstance(doc, dict):
                 continue
+            box = doc.get("arkItems")
+            if isinstance(box, list):
+                for item in box:
+                    if not isinstance(item, dict) or "src" in item:
+                        continue
+                    key = (int(item.get("a") or 0), int(item.get("b") or 0),
+                           int(item.get("c") or 0))
+                    if key in seed_ids:
+                        item["src"] = "seed"
             rep = doc.get("reputation")
             if not isinstance(rep, dict):
                 doc["reputation"] = {}
@@ -296,12 +310,15 @@ _PLAYER_DEFAULTS = {
     # own DB, so invented ids render as nothing. These six are real, named items
     # (see decomp/_adhoc/ark-ids.md, tools/ark_item_ids.json).
     "arkItems": [
-        {"a": 1, "b": 0, "c": 60530, "d": 1},   # A0  Additional Level 1 Socket
-        {"a": 2, "b": 0, "c": 60396, "d": 1},   # B0  Comprehensive Low-Wage Regulations
-        {"a": 2, "b": 1, "c": 60412, "d": 1},   # B1  Increased Macroeconomic subsidies
-        {"a": 3, "b": 0, "c": 60353, "d": 1},   # C0  Low wage regulations
-        {"a": 3, "b": 1, "c": 60359, "d": 1},   # C1  Energy Supply Act
-        {"a": 3, "b": 2, "c": 60364, "d": 1},   # C2  Nature conservation catalog
+        # "src": "seed" marks these as OUR starter items, not the player's: a
+        # mission reward may replace one when its socket group is full.  Anything
+        # without src (i.e. placed by the player or the client) is never touched.
+        {"a": 1, "b": 0, "c": 60530, "d": 1, "src": "seed"},   # A0 Additional Level 1 Socket
+        {"a": 2, "b": 0, "c": 60396, "d": 1, "src": "seed"},   # B0 Low-Wage Regulations
+        {"a": 2, "b": 1, "c": 60412, "d": 1, "src": "seed"},   # B1 Macroeconomic subsidies
+        {"a": 3, "b": 0, "c": 60353, "d": 1, "src": "seed"},   # C0 Low wage regulations
+        {"a": 3, "b": 1, "c": 60359, "d": 1, "src": "seed"},   # C1 Energy Supply Act
+        {"a": 3, "b": 2, "c": 60364, "d": 1, "src": "seed"},   # C2 Nature conservation catalog
     ],
     "stats": [], "settings": {}, "keyBindings": {},
     "infoMails": {}, "achievements": [], "reputation": {},
@@ -764,9 +781,22 @@ def h_get_world_stats(store, r, ctx):
 # ---- reputation ----------------------------------------------------------
 
 def h_get_reputation_points(store, r, ctx):
+    """``map<u32,u32>`` faction id -> reputation points (the career page).
+
+    The client renders one panel per faction (``FACTION_ECO=0``,
+    ``FACTION_TYCOON=1``, ``FACTION_TECH=2``) and treats a *missing key* as "no
+    data for that faction", so once the player has any reputation all three
+    keys are served - the two they have not earned read 0 and render as an
+    empty bar instead of a blank panel.
+    """
     p = store.player(_ctx_pid(ctx))
-    return _reply(PROFILE, "GetReputationPoints_V1",
-                  pairs=_int_keyed(p.get("reputation", {})))
+    rep = _int_keyed(p.get("reputation", {}))
+    if not rep:
+        return _reply(PROFILE, "GetReputationPoints_V1", pairs={})
+    pairs = {faction: int(rep.get(faction, 0))
+             for faction in content_voting.FACTIONS}
+    pairs.update({k: v for k, v in rep.items() if k not in pairs})
+    return _reply(PROFILE, "GetReputationPoints_V1", pairs=pairs)
 
 
 def h_are_rep_missing(store, r, ctx):
@@ -777,9 +807,14 @@ def h_are_rep_missing(store, r, ctx):
     its locally-earned points instead of asking for the server's.
     """
     p = store.player(_ctx_pid(ctx))
-    key = r.u32() if r.remaining() >= 4 else 0
+    if r.remaining() >= 4:
+        r.u32()                       # the faction being asked about
     rep = _int_keyed(p.get("reputation", {}))
-    missing = 0 if (rep.get(key) or len(rep) > 1) else 1
+    # "missing" is a property of the PROFILE, not of one faction: answering
+    # per key told the client "the server has nothing" for every faction the
+    # player had not earned yet, so it kept its own local zero and the career
+    # page showed nothing even though the vote had been credited
+    missing = 0 if rep else 1
     return _reply(PROFILE, "AreReputationPointsMissing_V1", missing=missing)
 
 
@@ -1049,6 +1084,64 @@ def _credit_mission(store, pid, record):
         wer[pid] = _as_int(wer.get(pid), 0) + points
     except (TypeError, ValueError):
         wer[pid] = points
+
+    _grant_ark_reward(store, p, record.get("id"))
+
+
+def _grant_ark_reward(store, player_doc, mission_id):
+    """Put the mission's ARK reward into a matching socket, if it has one.
+
+    The reward ids come from the achievement table that links mission assets to
+    rewards; only the ones that are real Item assets are in
+    ``content_events.MISSION_ARK_REWARDS`` (the rest are profile cosmetics and
+    cannot be items at all).  Allocation rules, from the client's own Ark asset:
+
+    * an item may only sit in the socket group of its own quality, so the first
+      free index **of that group** is used (A: 1, B: 2, C: 3 slots);
+    * when that group is full the reward is skipped rather than forced into a
+      wrong socket, where the client would drop it and show an empty slot;
+    * the box is a delta-managed map, so an existing socket is never
+      overwritten - the item the player put there stays.
+    """
+    if os.environ.get("RV_ARK_REWARDS", "1").strip() == "0":
+        return
+    rewards = content_events.mission_ark_rewards(mission_id)
+    if not rewards:
+        return
+    box = player_doc.get("arkItems")
+    if not isinstance(box, list):
+        box = player_doc["arkItems"] = []
+    letters = {1: "A", 2: "B", 3: "C"}
+    granted = []
+    for item_id, quality in rewards:
+        index = content_events.first_free_slot(box, quality)
+        evicted = None
+        if index is None:
+            # the group is full: a previous mission reward or one of our own
+            # seed items may be pushed out (never an item the player put there
+            # himself), so a finished event's reward is always collectable
+            for pos, item in enumerate(box):
+                if not isinstance(item, dict) or item.get("src") not in ("mission", "seed"):
+                    continue
+                if int(item.get("a") or 0) != int(quality):
+                    continue
+                evicted = (pos, item.get("c"))
+                index = int(item.get("b") or 0)
+                break
+        if index is None:
+            granted.append("%d:no free %s socket" % (item_id, letters.get(quality, "?")))
+            continue
+        if evicted:
+            box.pop(evicted[0])
+            granted.append("replaced %s" % evicted[1])
+        box.append({"a": int(quality), "b": int(index), "c": int(item_id), "d": 1,
+                    "src": "mission"})
+        granted.append("%d->%s%d" % (item_id, letters.get(quality, "?"), index))
+    if LOG is not None and granted:
+        try:
+            LOG("RMC ark reward: mission %s -> %s" % (mission_id, ", ".join(granted)))
+        except Exception:                        # noqa: BLE001
+            pass
 
 
 def _voting_slot_for(store, raw_id):

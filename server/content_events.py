@@ -4,7 +4,7 @@ Scope: this module only decides **what** the server says, never **how** it is
 framed.  ``rmc_services.py`` keeps the handlers and ``rv_shapes/voting.py``
 keeps the wire layouts; both are owned by other agents.  This file is
 dependency-free (standard library only) and has **no import-time side
-effects**: importing it must not read a file, open a socket or touch a store.
+effects**: importing it must not read a file, open a connection or touch a store.
 
 Evidence: ``decomp/_adhoc/voting-events-content.md`` (SS6 field table, SS7
 minimum viable event, SS8 traps, SS9 step 6/7/8).  Numbers that are still
@@ -132,6 +132,68 @@ MISSION_TABLE = tuple(
     for _chapter, _missions, _title in WORLD_EVENT_CHAPTERS
     for _i, _m in enumerate(_missions)
 )
+
+
+#: ARK items a mission grants, from the achievement table that links mission
+#: assets to rewards (``patch8.rda:data/config/questconfig/achievements.xml``:
+#: ``CompleteWorldEventNNMissionMM`` -> ``<Rewards><Item><Reward>GUID``).
+#:
+#: Only the rewards that are real **Item** assets are here.  Eight of the
+#: fifteen reward GUIDs are profile cosmetics (``ProfileTitle``,
+#: ``ProfilePortrait``, a decoration building) and can never be an ArkItem, so
+#: those missions keep their reputation payout only.  The seven listed are
+#: ``ConstructionPlanItem`` / ``BuildingUpgradeGlobal`` assets from the DLC
+#: data: quality A (1) when the asset declares no ``ItemQuality``, C (3) when
+#: it does.
+#:
+#: ``(mission GUID, ((item id, quality), ...))``
+MISSION_ARK_REWARD_TABLE = (
+    (3054106, ((7001003, 1),)),                    # Konstruktionsplan Sentinel 1.0 (A)
+    (3054107, ((7001000, 3),)),                    # Sentinel Upgrade 1 (C)
+    (3054108, ((7001001, 3), (7001002, 1))),       # Sentinel Upgrade 2 (C) + 3 (A)
+    (3058002, ((7111101, 3), (7111102, 3))),       # DLC-2 upgrades (C)
+    (3058003, ((7111103, 1),)),                    # DLC-2 upgrade (A)
+)
+
+#: Usable ARK slots per item quality, from every shipped Ark asset
+#: (A: 1, B: 2, C: 3): an item may only go into the group of its own quality,
+#: so a free B slot cannot take an A item.
+SLOTS_BY_QUALITY = ((1, (0,)), (2, (0, 1)), (3, (0, 1, 2)))
+
+
+def mission_ark_rewards(mission_id):
+    """``((item id, quality), ...)`` the ARK items a mission grants."""
+    wanted = _int(mission_id, 0)
+    for guid, rewards in MISSION_ARK_REWARD_TABLE:
+        if guid == wanted:
+            return rewards
+    return ()
+
+
+def first_free_slot(box, quality):
+    """First free index in ``quality``'s slot group, or ``None``.
+
+    ``box`` is the player's ``arkItems`` list in any spelling the store uses
+    (dicts with ``a..d`` or 4-element sequences).
+    """
+    taken = set()
+    for item in box or ():
+        try:
+            if isinstance(item, dict):
+                q = int(item.get("a", item.get("w0", 0)) or 0)
+                i = int(item.get("b", item.get("w1", 0)) or 0)
+                count = int(item.get("d", item.get("w3", 1)) or 0)
+            else:
+                seq = list(item)
+                q, i, count = int(seq[0] or 0), int(seq[1] or 0), int(seq[3] or 0)
+        except (TypeError, ValueError, IndexError):
+            continue
+        if count > 0:
+            taken.add((q, i))
+    for index in dict(SLOTS_BY_QUALITY).get(int(quality), ()):
+        if (int(quality), index) not in taken:
+            return index
+    return None
 
 
 def mission_info(mission_id):
