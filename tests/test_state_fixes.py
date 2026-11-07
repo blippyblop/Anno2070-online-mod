@@ -392,6 +392,21 @@ def test_mail_count(tmp):
     check("the shape is registered for the mail protocol",
           "GetMailCount_V1" in __import__("rv_shapes").mail.SHAPES)
 
+    # the mailbox itself, not just the count
+    box = store.player("default")["mailbox"]
+    check("the mail is in the mailbox with its loca id as template",
+          [(r["id"], r["template"], r["read"]) for r in box] == [(1, int(mail_id), True)],
+          box)
+    body = body_of(R.MAIL, "GetMails_V1", store)
+    check("GetMails_V1 lists it", int.from_bytes(body[:4], "little") == 1, body[:8].hex())
+    one = body_of(R.MAIL, "GetMail_V1", store, le32(1))
+    check("GetMail_V1 returns the same record",
+          int.from_bytes(one[:4], "little") == 1
+          and int.from_bytes(one[4 + 8:4 + 12], "little") == int(mail_id), one.hex())
+    R.respond_payload(R.MAIL, "DeleteMail_V1", store=store, body=le32(1))
+    check("DeleteMail_V1 removes it", store.player("default")["mailbox"] == [],
+          store.player("default")["mailbox"])
+
 
 def test_stats_capped():
     print("the community panel never exceeds the client's 4 rows")

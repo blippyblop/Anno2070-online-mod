@@ -803,6 +803,87 @@ def h_mail_count(store, r, ctx):
     return _reply(MAIL, "GetMailCount_V1", total=len(mails), unread=unread)
 
 
+def _mailbox(player_doc):
+    """The player's real mailbox: a list of ``{id, stamp, template, read}``."""
+    box = player_doc.get("mailbox")
+    if not isinstance(box, list):
+        box = player_doc["mailbox"] = []
+    return box
+
+
+def deliver_mail(player_doc, template, stamp=None, mail_id=None, read=False):
+    """Put one mail in the mailbox (idempotent per template)."""
+    box = _mailbox(player_doc)
+    for row in box:
+        if isinstance(row, dict) and int(row.get("template") or 0) == int(template):
+            return row
+    if mail_id is None:
+        mail_id = (max([int(r.get("id") or 0) for r in box] or [0]) + 1)
+    row = {"id": int(mail_id), "stamp": int(stamp if stamp is not None else time.time()),
+           "template": int(template), "read": bool(read)}
+    box.append(row)
+    return row
+
+
+def h_get_mails(store, r, ctx):
+    """``MailServiceProtocol::GetMails_V1``: the mailbox, newest first.
+
+    ``Mail`` = ``u32; u64; u32; bool``.  The u32 we return in the third slot is
+    the *loca id* of the mail (the same id the event's ``InitialMail`` /
+    ``ProgressMail`` / ``ConclusionMail`` use), so the client can render the
+    real text; the second is a unix timestamp and the last is the read flag.
+    """
+    p = store.player(_ctx_pid(ctx))
+    box = sorted(_mailbox(p), key=lambda row: -int(row.get("stamp") or 0))
+    return _reply(MAIL, "GetMails_V1", mails=box)
+
+
+def h_get_mail(store, r, ctx):
+    """``GetMail_V1``: one mail by id (request ``u32``), or an empty record."""
+    p = store.player(_ctx_pid(ctx))
+    wanted = r.u32() if r.remaining() >= 4 else 0
+    for row in _mailbox(p):
+        if int(row.get("id") or 0) == wanted:
+            return _reply(MAIL, "GetMail_V1", mail=row)
+    return _reply(MAIL, "GetMail_V1", mail=None)
+
+
+def h_set_read_flag(store, r, ctx):
+    """``SetReadFlag_V1``: mark mails read (also mirrors into ``infoMails``)."""
+    p = store.player(_ctx_pid(ctx))
+    read = True
+    while r.remaining() >= 4:
+        wanted = r.u32()
+        if r.remaining() >= 1:
+            read = bool(r.bool() if hasattr(r, "bool") else 1)
+        for row in _mailbox(p):
+            if int(row.get("id") or 0) == wanted:
+                row["read"] = read
+                template = int(row.get("template") or 0)
+                mails = p.get("infoMails")
+                if isinstance(mails, dict) and template in _int_keyed(mails):
+                    _int_keyed(mails)[template] = 1 if read else 0
+                    p["infoMails"] = _int_keyed(mails)
+    store.save()
+    return _reply(MAIL, "SetReadFlag_V1")
+
+
+def h_delete_mail(store, r, ctx):
+    p = store.player(_ctx_pid(ctx))
+    wanted = {r.u32()} if r.remaining() >= 4 else set()
+    p["mailbox"] = [row for row in _mailbox(p)
+                    if int(row.get("id") or 0) not in wanted]
+    store.save()
+    return _reply(MAIL, "DeleteMail_V1")
+
+
+def h_delete_all_mails(store, r, ctx):
+    p = store.player(_ctx_pid(ctx))
+    p["mailbox"] = []
+    store.save()
+    return _reply(MAIL, "DeleteAllMails_V1")
+
+
 def h_upload_mail(store, r, ctx):
     """``MailServiceProtocol::UploadMail_V1``: the client reports its mailbox.
 
@@ -838,9 +919,19 @@ def h_add_info_mail(store, r, ctx):
 
 
 def h_set_info_mail_read(store, r, ctx):
+    """Mark an info mail read - and the same mail in the mailbox.
+
+    The two documents describe the same mail (``infoMails`` is the flag map the
+    login reads, ``mailbox`` is the list the mail panel reads), so one handler
+    keeps them in step instead of letting the badge and the panel disagree.
+    """
     p = store.player(_ctx_pid(ctx))
     mail_id, read = r.u32(), r.bool() if r.remaining() else True
     p.setdefault("infoMails", {})[mail_id] = 1 if read else 0
+    for row in _mailbox(p):
+        if int(row.get("template") or 0) == int(mail_id) or \
+                int(row.get("id") or 0) == int(mail_id):
+            row["read"] = bool(read)
     store.save()
     return _reply(PROFILE, "SetInfoMailRead_V1")
 
@@ -1205,6 +1296,7 @@ def _send_event_mail(store, chapter):
     if int(mail_id) in mails:
         return
     mails[int(mail_id)] = 0                     # 0 = unread
+    deliver_mail(p, int(mail_id))
     if LOG is not None:
         try:
             LOG("RMC event mail: %s (chapter %s)" % (mail_id, chapter))
@@ -1264,6 +1356,7 @@ def _send_progress_mail(store, player_doc, mission_id):
     if int(mail_id) in mails:
         return
     mails[int(mail_id)] = 0
+    deliver_mail(player_doc, int(mail_id))
     if LOG is not None:
         try:
             LOG("RMC event mail: %s (%s, chapter %s)" % (mail_id, kind, chapter))
@@ -1717,6 +1810,11 @@ METHODS = {
 
     # ---- MailServiceProtocol (2) ----
     MAIL + "::GetMailCount_V1": h_mail_count,
+    MAIL + "::GetMails_V1": h_get_mails,
+    MAIL + "::GetMail_V1": h_get_mail,
+    MAIL + "::SetReadFlag_V1": h_set_read_flag,
+    MAIL + "::DeleteMail_V1": h_delete_mail,
+    MAIL + "::DeleteAllMails_V1": h_delete_all_mails,
     MAIL + "::UploadMail_V1": h_upload_mail,
 
     # ---- BackEndServiceProtocol (9) ----
@@ -1756,7 +1854,7 @@ VOID_METHODS = frozenset(
         # chat / friends (the chat voids)
         "Initialize_V1", "SignalChatReady_V1",
         # mail
-        "UploadMail_V1",
+        "UploadMail_V1", "SetReadFlag_V1", "DeleteMail_V1", "DeleteAllMails_V1",
         # backend
         "ScheduleMaintenance_V1", "StopMaintenance_V1",
     ))
@@ -1785,6 +1883,8 @@ _WRITER_SHORT_NAMES = frozenset((
     "SetFacebookAccount_V1", "ActivateUniqueKey_V1", "AddActivation_V1",
     "AddShopItem_V1", "RemoveShopItem_V1", "UploadLeaderboardTemplates_V1",
     # chat (no chat method writes: channels/ignore lists are read-only here)
+    # mail
+    "SetReadFlag_V1", "DeleteMail_V1", "DeleteAllMails_V1",
     # voting
     "Vote_V1", "UploadVotingTemplate_V1", "ClearVotingTemplates_V1",
     "UploadVoteMultipliers_V1",

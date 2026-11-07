@@ -22,9 +22,14 @@ concrete gap in the online service, named by the client itself.
 No game, no network, no state file needed: it only reads the log.
 """
 import collections
+import json
 import os
 import re
 import sys
+
+#: what the client knows how to call, extracted from the decompiled build
+CLIENT_METHODS = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "client_methods.json")
 
 CALL_RE = re.compile(r"RV-RMC \[[^\]]*\] ([A-Za-z0-9_]+)::[A-Za-z0-9_]*::"
                      r"([A-Za-z0-9_]+) call=(\d+)")
@@ -84,9 +89,52 @@ def name_block_only(body, proto, method):
     return body <= shortest + 16
 
 
+def coverage(known):
+    """Print how much of the client's own protocol surface we implement."""
+    try:
+        with open(CLIENT_METHODS, "r", encoding="utf-8") as fh:
+            doc = json.load(fh)
+        protocols = doc.get("protocols") or {}
+    except (OSError, ValueError):
+        print("no client_methods.json next to this script")
+        return 1
+    print("=" * 78)
+    print(" protocol coverage: what this server implements of what the client knows")
+    print("=" * 78)
+    total = done = 0
+    gaps = []
+    for proto in sorted(protocols):
+        methods = protocols[proto] or []
+        have = [m for m in methods if "%s::%s" % (proto, m) in known]
+        total += len(methods)
+        done += len(have)
+        note = ""
+        if proto == "MatchMakingServiceProtocol":
+            note = "  (multiplayer only - unreachable client-side)"
+        if proto == "LoadTestServiceProtocol":
+            note = "  (the twin service; the game does not use it)"
+        print("   %-38s %3d / %3d %s" % (proto, len(have), len(methods), note))
+        for m in methods:
+            if "%s::%s" % (proto, m) not in known:
+                gaps.append((proto, m))
+    print("-" * 78)
+    print("   %-38s %3d / %3d  (%.0f%%)" % ("total", done, total,
+                                            100.0 * done / max(1, total)))
+    actionable = [g for g in gaps if g[0] not in ("MatchMakingServiceProtocol",
+                                                  "LoadTestServiceProtocol")]
+    print("   %-38s %3d" % ("gaps that matter for single player", len(actionable)))
+    for proto, method in actionable:
+        print("      %-56s" % ("%s::%s" % (proto, method)))
+    print("-" * 78)
+    return 0
+
+
 def main(argv):
-    path = argv[1] if len(argv) > 1 else os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "..", "logs", "server.log")
+    here = os.path.dirname(os.path.abspath(__file__))
+    if "--coverage" in argv:
+        known, _void = load_methods()
+        return coverage(set(known) | LOGIN_HANDLED)
+    path = argv[1] if len(argv) > 1 else os.path.join(here, "..", "logs", "server.log")
     path = os.path.abspath(path)
     if not os.path.isfile(path):
         print("no server log at %s" % path)
