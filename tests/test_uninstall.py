@@ -136,6 +136,37 @@ def case_foreign_runtime(root):
     check("folder kept", os.path.exists(os.path.join(junk, "important.txt")))
 
 
+def case_flat_install_removes_only_our_files(root):
+    print("package extracted into the game folder -> only the mod's files go")
+    game, _runtime = build(root, backup=UBI_DLL)
+    write(os.path.join(game, "PLAY.bat"), "@echo off\n")
+    write(os.path.join(game, "SELFTEST.bat"), "@echo off\n")
+    write(os.path.join(game, "config.ini"), "[player] name = Tester\n")
+    write(os.path.join(game, "server", "mimic_server.py"), "# server\n")
+    write(os.path.join(game, "docs", "install.md"), "# docs\n")
+    write(os.path.join(game, "data", "mimic_state.json"), "{}")
+    for name in ("bin", "maindata", "locales"):
+        os.makedirs(os.path.join(game, name), exist_ok=True)
+        write(os.path.join(game, name, "keep.bin"), b"game data")
+    res = run(["--yes", "--game", game, "--dir", game,
+               "--backup-dir", os.path.join(root, "bk")])
+    check("exit 0", res.returncode == 0, res.returncode)
+    check("Anno5.exe survives", os.path.exists(os.path.join(game, "Anno5.exe")))
+    check("the game's own folders survive",
+          all(os.path.exists(os.path.join(game, n, "keep.bin"))
+              for n in ("bin", "maindata", "locales")))
+    check("the player's own data folder survives",
+          os.path.exists(os.path.join(game, "data", "mimic_state.json")))
+    check("PLAY.bat is gone", not os.path.exists(os.path.join(game, "PLAY.bat")))
+    check("config.ini is gone", not os.path.exists(os.path.join(game, "config.ini")))
+    check("server/ is gone", not os.path.isdir(os.path.join(game, "server")))
+    check("docs/ is gone", not os.path.isdir(os.path.join(game, "docs")))
+    check("the loader was restored",
+          read(os.path.join(game, "upc_r2_loader64.dll")) == UBI_DLL)
+    check("said only the mod's files are removed",
+          "removing only the mod" in res.stdout, res.stdout[-300:])
+
+
 def case_game_folder_is_never_deleted(root):
     print("the package was unzipped into the game folder -> the game is not deleted")
     game, _runtime = build(root, backup=UBI_DLL)
@@ -175,7 +206,9 @@ def main():
         print("uninstaller: skipped (packaging/ is not part of this package)")
         return 0
     for case in (case_with_backup, case_no_backup, case_foreign_dll, case_purge,
-                 case_dry_run, case_foreign_runtime, case_game_folder_is_never_deleted,
+                 case_dry_run, case_foreign_runtime,
+                 case_flat_install_removes_only_our_files,
+                 case_game_folder_is_never_deleted,
                  case_explicit_game):
         root = tempfile.mkdtemp(prefix="anno-uninstall-")
         try:

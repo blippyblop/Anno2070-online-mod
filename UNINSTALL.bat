@@ -220,9 +220,18 @@ rem ---------- remove this folder ----------------------------------------
 echo.
 echo [3/4] this folder
 if exist "%PKG%\Anno5.exe" (
-  echo       this folder IS the game folder - not deleting it.
-  echo       delete the files you extracted into it by hand, or better:
-  echo       re-extract the package into its own folder next time.
+  rem the package was extracted straight into the game folder.  Deleting the
+  rem folder would delete the game, so remove exactly the files the package
+  rem brought and leave everything else alone.
+  echo       this folder is the game folder - removing only the mod's files
+  for %%F in (PLAY.bat INSTALL.bat UNINSTALL.bat PROGRESS.bat SELFTEST.bat RUN-TESTS.bat ^
+              READ-ME-FIRST.txt README.md VERSION LICENSE config.ini) do (
+    if exist "%PKG%\%%F" del /f /q "%PKG%\%%F" >nul 2>&1
+  )
+  for %%D in (server docs loader tests logs) do (
+    if exist "%PKG%\%%D\." rmdir /s /q "%PKG%\%%D" >nul 2>&1
+  )
+  echo       done - Anno5.exe and the game's own folders are untouched
   goto :shortcuts
 )
 if not exist "%PKG%\PLAY.bat" if not exist "%PKG%\server\mimic_server.py" (

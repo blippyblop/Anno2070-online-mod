@@ -48,6 +48,12 @@ LOADER_BACKUPS = (LOADER + ".original-backup",
 # to tell "our DLL" from "the player's own DLL we never replaced"
 LOADER_MARKER = b"upc_stub.log"
 SHORTCUTS = (APP_NAME + ".lnk", "Uninstall " + APP_NAME + ".lnk")
+#: what a flat install (package extracted straight into the game folder) put
+#: there - the only things we may delete in that case
+PACKAGE_FILES = ("PLAY.bat", "INSTALL.bat", "UNINSTALL.bat", "PROGRESS.bat",
+                 "SELFTEST.bat", "RUN-TESTS.bat", "READ-ME-FIRST.txt",
+                 "README.md", "VERSION", "LICENSE", "config.ini")
+PACKAGE_DIRS = ("server", "docs", "loader", "tests", "logs")
 
 GAME_CANDIDATES = [
     r"C:\Program Files (x86)\Steam\steamapps\common\Anno 2070",
@@ -237,6 +243,40 @@ def remove_tree(path, attempts=6):
             return True
         time.sleep(0.7 * (attempt + 1))   # a virus scanner may hold a handle
     return not os.path.isdir(path)
+
+
+def remove_flat_package(game, dry_run=False):
+    """Delete the files a flat install added, keeping the game itself.
+
+    When the package sits *inside* the game folder (which is how most players
+    extract it), deleting the folder would delete Anno 2070.  Instead remove
+    exactly the names the package brings and report what is left alone.
+    """
+    removed = []
+    for name in PACKAGE_FILES:
+        path = os.path.join(game, name)
+        if not os.path.isfile(path):
+            continue
+        if dry_run:
+            say(f"      would delete {path}")
+            continue
+        try:
+            os.remove(path)
+            removed.append(name)
+        except OSError:
+            say(f"      could not delete {path}")
+    for name in PACKAGE_DIRS:
+        path = os.path.join(game, name)
+        if not os.path.isdir(path):
+            continue
+        if dry_run:
+            say(f"      would delete {path}")
+            continue
+        if remove_tree(path):
+            removed.append(name + os.sep)
+        else:
+            say(f"      some files in {path} are locked - delete that folder by hand")
+    return removed
 
 
 def looks_like_ours(folder):
@@ -505,6 +545,14 @@ def main():
     for folder in roots:
         if not os.path.isdir(folder):
             say("      not present:", folder)
+            continue
+        if os.path.isfile(os.path.join(folder, "Anno5.exe")):
+            # a flat install: the package lives in the game folder
+            say("      this is the game folder - removing only the mod's files")
+            removed = remove_flat_package(folder, dry_run)
+            if removed and not dry_run:
+                say("      removed: " + ", ".join(sorted(removed)))
+            say("      Anno5.exe and the game's own folders are untouched")
             continue
         if not looks_like_ours(folder):
             say("      this folder does not look like ours - not deleting it")
