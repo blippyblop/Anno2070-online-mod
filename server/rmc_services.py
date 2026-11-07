@@ -1137,6 +1137,7 @@ def _credit_mission(store, pid, record):
 
     _grant_ark_reward(store, p, record.get("id"))
     _grant_achievement(store, p, record.get("id"))
+    _send_progress_mail(store, p, record.get("id"))
 
 
 def _send_event_mail(store, chapter):
@@ -1180,6 +1181,46 @@ def _grant_achievement(store, player_doc, mission_id):
     if LOG is not None:
         try:
             LOG("RMC achievement: %s (mission %s)" % (achievement, mission_id))
+        except Exception:                    # noqa: BLE001
+            pass
+
+
+def _send_progress_mail(store, player_doc, mission_id):
+    """Mail the chapter's own reaction to a solved mission.
+
+    Every chapter ships ``ProgressMail`` (one mission solved) and
+    ``ConclusionMail`` (the whole chain) beside its ``InitialMail`` - all real
+    loca ids the client renders itself.  Sending the matching one is what makes
+    the mailbox read like the official server's, without inventing any text.
+    """
+    info = content_events.mission_info(mission_id)
+    chapter = info.get("chapter")
+    if not chapter:
+        return
+    total = content_events.chapter_mission_count(chapter) or 1
+    solved = set()
+    we = _world_event_state(store)
+    for rec in we.get("completedMissions") or ():
+        if not isinstance(rec, dict):
+            continue
+        if content_events.mission_info(rec.get("id")).get("chapter") != chapter:
+            continue
+        solved.add(int(rec.get("id") or 0))
+    kind = "conclusion" if len(solved) >= total else "progress"
+    mail_id = content_events.chapter_mail(chapter, kind)
+    if not mail_id:
+        return
+    mails = player_doc.get("infoMails")
+    if not isinstance(mails, dict):
+        mails = player_doc["infoMails"] = {}
+    mails = {int(k): v for k, v in mails.items() if str(k).lstrip("-").isdigit()}
+    player_doc["infoMails"] = mails
+    if int(mail_id) in mails:
+        return
+    mails[int(mail_id)] = 0
+    if LOG is not None:
+        try:
+            LOG("RMC event mail: %s (%s, chapter %s)" % (mail_id, kind, chapter))
         except Exception:                    # noqa: BLE001
             pass
 

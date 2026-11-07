@@ -60,6 +60,9 @@ putting a real date on it, and echoing the mission GUIDs the player solved**.
 * A solved mission also unlocks its **achievement** (the id from
   `achievements.xml`, e.g. `1116925`); the client owns the name, description and
   icon, so the Achievements tab shows the real entry.
+* A solved mission also sends that chapter's **ProgressMail** (and the
+  **ConclusionMail** once all three of its missions are done) - again real loca
+  ids, so the mailbox reads like the official server's.
 * When a new chapter rolls, the player receives that chapter's **own intro
   mail** (`InitialMail` from its `WorldEvent` block - `1005860` for Atomic
   Terror, `7311006` for the Ebashi Trench, …), so the mail panel carries the

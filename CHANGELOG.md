@@ -56,6 +56,9 @@ Added
   mailbox - total and unread, from the same map `SetInfoMailRead_V1` flips - so
   the event's intro mail shows as unread. `UploadMail_V1` stores what the client
   reports instead of discarding it.
+- **Events mail you as you play**: the chapter's `ProgressMail` on a solved
+  mission and its `ConclusionMail` when the chain is finished, beside the
+  `InitialMail` a new chapter sends.
 - **Events send mail and unlock achievements.** A new event puts that chapter's
   own `InitialMail` id in the mailbox (real client text: `1005860` Atomic
   Terror, `1005939` Eden, `7111160` Global Distrust, `7211011` Nordamark,

@@ -337,6 +337,13 @@ def test_event_mail_and_achievement(tmp):
     check("it survives a restart",
           [a["id"] for a in reopened.player("default")["achievements"]] == [1116925])
 
+    # a solved mission nudges the mailbox with the chapter's own progress mail
+    progressed = reopened.player("default")["infoMails"]
+    mission_chapter = CE.mission_info(3054108)["chapter"]
+    progress_id = CE.chapter_mail(mission_chapter, "progress")
+    check("the chapter's ProgressMail arrives with the first mission",
+          int(progress_id) in {int(k) for k in progressed}, progressed)
+
 
 def test_mixed_key_save(tmp):
     print("a save never fails because keys have different types")
