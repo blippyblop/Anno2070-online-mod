@@ -6,7 +6,7 @@ Plain python, no pytest:
     source ~/tools/env.sh && python3 tools/test_rmc_services.py
 
 Exit code 0 means every check passed.  What is asserted, for EVERY method in
-``rmc_services.METHODS`` (85 of them: 54 PlayerProfile + 8 Voting + 12
+``rmc_services.METHODS`` (91 of them: 54 PlayerProfile + 8 Voting + 12
 WorldEvent + 9 BackEnd):
 
   * the dispatcher answers at all, with a COMPLETE frame (the old bug was a
@@ -202,6 +202,16 @@ COMPLETED_MISSION = ("seq", "str", "u32", "str")
 LEADERBOARD = ("seq", "u32", "u32", "u64", "u64", "u32", ("list", "u8"))
 
 LAYOUT = {
+    # ---- ChatServiceProtocol (4) ----
+    "ChatServiceProtocol::Initialize_V1": "void",
+    "ChatServiceProtocol::SignalChatReady_V1": "void",
+    "ChatServiceProtocol::GetChannels_V1": ("list", ("seq", "bool", "u32", "u32")),
+    "ChatServiceProtocol::GetIgnoreList_V1": ("list", "u32"),
+    # ---- FriendsServiceProtocol (2) ----
+    "FriendsServiceProtocol::GetFriends_V1": ("list", ("seq", "u32", "u32", "u32",
+                                                       "u32", "u32", "u32", "bool", "bool")),
+    "FriendsServiceProtocol::GetRecentContacts_V1": ("list", ("seq", "u32", "u32", "u32",
+                                                              "u32", "u32", "u32", "bool", "bool")),
     # ---- MailServiceProtocol (2) ----
     "MailServiceProtocol::GetMailCount_V1": ("seq", "u32", "u32", "u32"),
     "MailServiceProtocol::UploadMail_V1": "void",
@@ -429,7 +439,7 @@ def main():
         responder = R.RmcResponder(store, lambda *a, **k: None)
 
         # ---- dispatch-table completeness --------------------------------
-        check("METHODS has 85 methods", len(R.METHODS) == 85, str(len(R.METHODS)))
+        check("METHODS has 91 methods", len(R.METHODS) == 91, str(len(R.METHODS)))
         check("LAYOUT covers every method",
               set(LAYOUT) == set(R.METHODS),
               "missing=%r extra=%r" % (sorted(set(R.METHODS) - set(LAYOUT)),
@@ -635,7 +645,7 @@ def main():
                 raw, _ = seam_split(proto, method, R.Store(None))
                 if raw != ("%s::%s*" % (proto, method)).encode() + b"\x00":
                     bad_name.append((full, raw))
-            check("seam: all 85 methods answer with the '*'-suffixed name block",
+            check("seam: all 91 methods answer with the '*'-suffixed name block",
                   not bad_name, repr(bad_name[:3]))
 
             # unknown / malformed input must be None, never an exception and

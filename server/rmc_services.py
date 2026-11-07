@@ -74,6 +74,8 @@ if not hasattr(rv, "build"):            # pragma: no cover - defensive
 
 PROFILE = "PlayerProfileServiceProtocol"
 MAIL = "MailServiceProtocol"
+CHAT = "ChatServiceProtocol"
+FRIENDS = "FriendsServiceProtocol"
 VOTING = "VotingServiceProtocol"
 WORLD = "WorldEventServiceProtocol"
 BACKEND = "BackEndServiceProtocol"
@@ -741,6 +743,50 @@ def h_reset_helper_quests(store, r, ctx):
     p["helperQuests"] = []
     store.save()
     return _reply(PROFILE, "ResetHelperQuests_V1")
+
+
+def h_chat_channels(store, r, ctx):
+    """``ChatServiceProtocol::GetChannels_V1``: the channels to join.
+
+    A channel carries no name on the wire - the client resolves the id against
+    its own data - so a made-up id would render as a blank tab.  The store may
+    publish real ones under ``state["chat"]["channels"]``; until it does, the
+    honest answer is an empty (but well-formed) list.
+    """
+    chat = store.state.get("chat")
+    rows = chat.get("channels") if isinstance(chat, dict) else None
+    return _reply(CHAT, "GetChannels_V1", channels=rows or ())
+
+
+def h_chat_ignore_list(store, r, ctx):
+    """``GetIgnoreList_V1``: the players this client muted (u32 ids)."""
+    p = store.player(_ctx_pid(ctx))
+    return _reply(CHAT, "GetIgnoreList_V1", ignored=p.get("ignored") or ())
+
+
+def h_chat_void(method):
+    def handler(store, r, ctx):
+        store.player(_ctx_pid(ctx))
+        return _reply(CHAT, method)
+    handler.__name__ = "h_chat_" + method.lower()
+    return handler
+
+
+def h_get_friends(store, r, ctx):
+    """``FriendsServiceProtocol::GetFriends_V1``: the friend list.
+
+    ``Friend`` carries ids, not names; with nobody else on a local server the
+    truthful answer is an empty list.  A store may fill
+    ``players.<pid>.friends`` later and the same reply will carry it.
+    """
+    p = store.player(_ctx_pid(ctx))
+    return _reply(FRIENDS, "GetFriends_V1", friends=p.get("friends") or ())
+
+
+def h_get_recent_contacts(store, r, ctx):
+    p = store.player(_ctx_pid(ctx))
+    return _reply(FRIENDS, "GetRecentContacts_V1",
+                  recent=p.get("recentContacts") or ())
 
 
 def h_mail_count(store, r, ctx):
@@ -1659,6 +1705,16 @@ METHODS = {
     WORLD + "::SetReputationPoints_V1": h_we_set_reputation,
     WORLD + "::GetStats_V1": h_we_get_stats,
 
+    # ---- ChatServiceProtocol (4) ----
+    CHAT + "::Initialize_V1": h_chat_void("Initialize_V1"),
+    CHAT + "::SignalChatReady_V1": h_chat_void("SignalChatReady_V1"),
+    CHAT + "::GetChannels_V1": h_chat_channels,
+    CHAT + "::GetIgnoreList_V1": h_chat_ignore_list,
+
+    # ---- FriendsServiceProtocol (2) ----
+    FRIENDS + "::GetFriends_V1": h_get_friends,
+    FRIENDS + "::GetRecentContacts_V1": h_get_recent_contacts,
+
     # ---- MailServiceProtocol (2) ----
     MAIL + "::GetMailCount_V1": h_mail_count,
     MAIL + "::UploadMail_V1": h_upload_mail,
@@ -1697,6 +1753,8 @@ VOID_METHODS = frozenset(
         "UploadVoteMultipliers_V1", "Register_V1", "Unregister_V1",
         "SetVisited_V1", "ClearWorldEventTemplates_V1",
         "UploadWorldEventTemplate_V1",
+        # chat / friends (the chat voids)
+        "Initialize_V1", "SignalChatReady_V1",
         # mail
         "UploadMail_V1",
         # backend
@@ -1726,6 +1784,7 @@ _WRITER_SHORT_NAMES = frozenset((
     "InvalidateAllReputationPoints_V1",
     "SetFacebookAccount_V1", "ActivateUniqueKey_V1", "AddActivation_V1",
     "AddShopItem_V1", "RemoveShopItem_V1", "UploadLeaderboardTemplates_V1",
+    # chat (no chat method writes: channels/ignore lists are read-only here)
     # voting
     "Vote_V1", "UploadVotingTemplate_V1", "ClearVotingTemplates_V1",
     "UploadVoteMultipliers_V1",

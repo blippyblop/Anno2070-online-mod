@@ -64,6 +64,14 @@ if defined SPY (
 )
 
 echo.
+echo [ online services ]
+if defined SPY (
+  "!SPY!" "%~dp0server\session_report.py" "%SV%"
+) else (
+  echo    python not found - cannot summarise the session
+)
+
+echo.
 echo ---------------------------------------------------------------------
 if !RV! GEQ 25 (
   echo VERDICT: a full online session - the server answered !RV! calls with
