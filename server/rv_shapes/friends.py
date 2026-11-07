@@ -55,8 +55,13 @@ def build(proto, method, **kwargs):
     if name == "GetFriendsWithActivations_V1":
         return (name_block(PROTO, "GetFriendsWithActivations_V1")
                 + friends(kwargs.get("friends", ())))
-    if name in ("AddFriend_V1", "RemoveFriend_V1", "AddRecentContact_V1"):
+    if name in ("AddFriend_V1", "RemoveFriend_V1", "AddRecentContact_V1",
+                "SetComment_V1"):
         return name_block(PROTO, name)
+    if name in ("FindPlayers_V1", "FindFacebookFriends_V1"):
+        # SearchResult = u32; u32; u32; u64 - a search that finds nobody is an
+        # empty list, which is the truth on a local server
+        return name_block(PROTO, name) + u32(0)
     return None
 
 
@@ -67,4 +72,7 @@ SHAPES = {
     "AddFriend_V1": "void",
     "RemoveFriend_V1": "void",
     "AddRecentContact_V1": "void",
+    "SetComment_V1": "void",
+    "FindPlayers_V1": "u32 count (SearchResult: u32, u32, u32, u64)",
+    "FindFacebookFriends_V1": "u32 count (SearchResult: u32, u32, u32, u64)",
 }

@@ -68,7 +68,11 @@ def build(proto, method, **kwargs):
         return get_channels(kwargs.get("channels", ()))
     if name == "GetIgnoreList_V1":
         return get_ignore_list(kwargs.get("ignored", ()))
+    if name == "GetBanInfo_V1":
+        # no bans on a local server: an empty list
+        return name_block(PROTO, "GetBanInfo_V1") + u32(0)
     if name in ("Initialize_V1", "SignalChatReady_V1", "SignalChatNotReady_V1",
+                "SendMessages_V1",
                 "Subscribe_V1", "Unsubscribe_V1", "SendToChannel_V1",
                 "SendToUser_V1", "SendToGroup_V1", "Ignore_V1", "Unignore_V1",
                 "BanPlayerFromChat_V1", "UnbanPlayerFromChat_V1"):
@@ -91,4 +95,6 @@ SHAPES = {
     "Unignore_V1": "void",
     "BanPlayerFromChat_V1": "void",
     "UnbanPlayerFromChat_V1": "void",
+    "SendMessages_V1": "void",
+    "GetBanInfo_V1": "u32 count (no bans)",
 }

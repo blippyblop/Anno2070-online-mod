@@ -867,6 +867,67 @@ def _friends_list(store, ctx, key):
     return rows if isinstance(rows, list) else []
 
 
+def h_find_players(store, r, ctx, method="FindPlayers_V1"):
+    """``FindPlayers_V1`` / ``FindFacebookFriends_V1``: a search.
+
+    The request is a handful of u32 filters; on a local server there is nobody
+    to find, so the reply is an empty ``SearchResult`` list - the truth, and the
+    same document the client already copes with.
+    """
+    while r.remaining() >= 4:
+        r.u32()
+    return _reply(FRIENDS, method)
+
+
+def h_set_comment(store, r, ctx):
+    """``SetComment_V1``: String friend, String comment -> void."""
+    who = r.string() if r.remaining() else ""
+    comment = r.string() if r.remaining() else ""
+    p = store.player(_ctx_pid(ctx))
+    if who:
+        comments = p.get("comments")
+        if not isinstance(comments, dict):
+            comments = p["comments"] = {}
+        comments[who] = comment[:200]
+        store.save()
+    return _reply(FRIENDS, "SetComment_V1")
+
+
+def h_chat_send_messages(store, r, ctx):
+    """``SendMessages_V1``: a batch of chat messages (bool,u32,bool,u32 each)."""
+    sent = _chat_store(store).setdefault("sent", [])
+    while r.remaining() >= 10:
+        flag_a = bool(r.u32()) if r.remaining() >= 4 else False
+        target = r.u32() if r.remaining() >= 4 else 0
+        flag_b = bool(r.u32()) if r.remaining() >= 4 else False
+        payload = r.u32() if r.remaining() >= 4 else 0
+        sent.append({"batch": True, "a": flag_a, "target": target,
+                     "b": flag_b, "value": payload, "ts": int(time.time())})
+    del sent[:-50]
+    store.save()
+    return _reply(CHAT, "SendMessages_V1")
+
+
+def h_mail_upload_pair(store, r, ctx, method):
+    """``UploadMailToProfile_V1`` and friends: u32, u32 -> void.
+
+    The pair is (profile id, mail id) in the captures we have; whatever it is,
+    recording it is strictly better than dropping it, and the reply is void by
+    contract so no shape can go wrong.
+    """
+    p = store.player(_ctx_pid(ctx))
+    first = r.u32() if r.remaining() >= 4 else 0
+    second = r.u32() if r.remaining() >= 4 else 0
+    if first or second:
+        uploads = p.get("mailUploads")
+        if not isinstance(uploads, list):
+            uploads = p["mailUploads"] = []
+        uploads.append({"first": first, "second": second, "ts": int(time.time())})
+        del uploads[:-50]
+        store.save()
+    return _reply(MAIL, method)
+
+
 def h_add_recent_contact(store, r, ctx):
     return h_add_friend_kind(store, r, ctx, "AddRecentContact_V1", "recentContacts")
 
@@ -1957,6 +2018,8 @@ METHODS = {
                              h_chat_ignore(store, r, ctx, "Unignore_V1", True)),
     CHAT + "::BanPlayerFromChat_V1": h_chat_void("BanPlayerFromChat_V1"),
     CHAT + "::UnbanPlayerFromChat_V1": h_chat_void("UnbanPlayerFromChat_V1"),
+    CHAT + "::GetBanInfo_V1": h_chat_void("GetBanInfo_V1"),
+    CHAT + "::SendMessages_V1": h_chat_send_messages,
 
     # ---- FriendsServiceProtocol (6) ----
     FRIENDS + "::GetFriends_V1": h_get_friends,
@@ -1965,6 +2028,11 @@ METHODS = {
     FRIENDS + "::AddFriend_V1": h_add_friend,
     FRIENDS + "::RemoveFriend_V1": h_remove_friend,
     FRIENDS + "::AddRecentContact_V1": h_add_recent_contact,
+    FRIENDS + "::SetComment_V1": h_set_comment,
+    FRIENDS + "::FindPlayers_V1": h_find_players,
+    FRIENDS + "::FindFacebookFriends_V1": (lambda store, r, ctx:
+                                           h_find_players(store, r, ctx,
+                                                          "FindFacebookFriends_V1")),
 
     # ---- MailServiceProtocol (2) ----
     MAIL + "::GetMailCount_V1": h_mail_count,
@@ -1974,6 +2042,17 @@ METHODS = {
     MAIL + "::DeleteMail_V1": h_delete_mail,
     MAIL + "::DeleteAllMails_V1": h_delete_all_mails,
     MAIL + "::UploadMail_V1": h_upload_mail,
+    MAIL + "::UploadMailToProfile_V1": (lambda store, r, ctx:
+                                        h_mail_upload_pair(store, r, ctx,
+                                                           "UploadMailToProfile_V1")),
+    MAIL + "::UploadMailsToProfiles_V1": (lambda store, r, ctx:
+                                          h_mail_upload_pair(store, r, ctx,
+                                                             "UploadMailsToProfiles_V1")),
+    MAIL + "::BroadcastMail_V1": (lambda store, r, ctx:
+                                  h_mail_upload_pair(store, r, ctx, "BroadcastMail_V1")),
+    MAIL + "::DeleteAllMailsByPid_V1": (lambda store, r, ctx:
+                                        h_mail_upload_pair(store, r, ctx,
+                                                           "DeleteAllMailsByPid_V1")),
 
     # ---- BackEndServiceProtocol (9) ----
     BACKEND + "::GetVersion_V1": h_backend_get_version,
@@ -2013,10 +2092,13 @@ VOID_METHODS = frozenset(
         "Initialize_V1", "SignalChatReady_V1", "SignalChatNotReady_V1",
         "Subscribe_V1", "Unsubscribe_V1", "SendToChannel_V1", "SendToUser_V1",
         "SendToGroup_V1", "Ignore_V1", "Unignore_V1",
-        "BanPlayerFromChat_V1", "UnbanPlayerFromChat_V1",
+        "BanPlayerFromChat_V1", "UnbanPlayerFromChat_V1", "SendMessages_V1",
         "AddFriend_V1", "RemoveFriend_V1", "AddRecentContact_V1",
+        "SetComment_V1",
         # mail
         "UploadMail_V1", "SetReadFlag_V1", "DeleteMail_V1", "DeleteAllMails_V1",
+        "UploadMailToProfile_V1", "UploadMailsToProfiles_V1", "BroadcastMail_V1",
+        "DeleteAllMailsByPid_V1",
         # backend
         "ScheduleMaintenance_V1", "StopMaintenance_V1",
     ))
@@ -2047,9 +2129,12 @@ _WRITER_SHORT_NAMES = frozenset((
     # chat / friends (these write the store)
     "Subscribe_V1", "Unsubscribe_V1", "SendToChannel_V1", "SendToUser_V1",
     "SendToGroup_V1", "Ignore_V1", "Unignore_V1",
-    "AddFriend_V1", "RemoveFriend_V1", "AddRecentContact_V1",
+    "AddFriend_V1", "RemoveFriend_V1", "AddRecentContact_V1", "SetComment_V1",
+    "SendMessages_V1",
     # mail
     "SetReadFlag_V1", "DeleteMail_V1", "DeleteAllMails_V1",
+    "UploadMailToProfile_V1", "UploadMailsToProfiles_V1", "BroadcastMail_V1",
+    "DeleteAllMailsByPid_V1",
     # voting
     "Vote_V1", "UploadVotingTemplate_V1", "ClearVotingTemplates_V1",
     "UploadVoteMultipliers_V1",

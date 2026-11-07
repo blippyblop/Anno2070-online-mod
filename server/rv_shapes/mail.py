@@ -102,4 +102,8 @@ SHAPES = {
     "SetReadFlag_V1": "void",
     "DeleteMail_V1": "void",
     "DeleteAllMails_V1": "void",
+    "UploadMailToProfile_V1": "void",
+    "UploadMailsToProfiles_V1": "void",
+    "BroadcastMail_V1": "void",
+    "DeleteAllMailsByPid_V1": "void",
 }

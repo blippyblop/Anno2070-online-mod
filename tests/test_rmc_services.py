@@ -6,7 +6,7 @@ Plain python, no pytest:
     source ~/tools/env.sh && python3 tools/test_rmc_services.py
 
 Exit code 0 means every check passed.  What is asserted, for EVERY method in
-``rmc_services.METHODS`` (110 of them: 54 PlayerProfile + 8 Voting + 12
+``rmc_services.METHODS`` (119 of them: 54 PlayerProfile + 8 Voting + 12
 WorldEvent + 9 BackEnd):
 
   * the dispatcher answers at all, with a COMPLETE frame (the old bug was a
@@ -215,6 +215,8 @@ LAYOUT = {
     "ChatServiceProtocol::Unignore_V1": "void",
     "ChatServiceProtocol::BanPlayerFromChat_V1": "void",
     "ChatServiceProtocol::UnbanPlayerFromChat_V1": "void",
+    "ChatServiceProtocol::GetBanInfo_V1": ("list", "u32"),
+    "ChatServiceProtocol::SendMessages_V1": "void",
     "ChatServiceProtocol::GetChannels_V1": ("list", ("seq", "bool", "u32", "u32")),
     "ChatServiceProtocol::GetIgnoreList_V1": ("list", "u32"),
     # ---- FriendsServiceProtocol (6) ----
@@ -223,6 +225,9 @@ LAYOUT = {
     "FriendsServiceProtocol::AddFriend_V1": "void",
     "FriendsServiceProtocol::RemoveFriend_V1": "void",
     "FriendsServiceProtocol::AddRecentContact_V1": "void",
+    "FriendsServiceProtocol::SetComment_V1": "void",
+    "FriendsServiceProtocol::FindPlayers_V1": ("list", ("seq", "u32", "u32", "u32", "u64")),
+    "FriendsServiceProtocol::FindFacebookFriends_V1": ("list", ("seq", "u32", "u32", "u32", "u64")),
     "FriendsServiceProtocol::GetRecentContacts_V1": ("list", ("seq", "u32", "u32", "u32",
                                                               "u32", "u32", "u32", "bool", "bool")),
     # ---- MailServiceProtocol (7) ----
@@ -233,6 +238,10 @@ LAYOUT = {
     "MailServiceProtocol::DeleteMail_V1": "void",
     "MailServiceProtocol::DeleteAllMails_V1": "void",
     "MailServiceProtocol::UploadMail_V1": "void",
+    "MailServiceProtocol::UploadMailToProfile_V1": "void",
+    "MailServiceProtocol::UploadMailsToProfiles_V1": "void",
+    "MailServiceProtocol::BroadcastMail_V1": "void",
+    "MailServiceProtocol::DeleteAllMailsByPid_V1": "void",
     # ---- PlayerProfileServiceProtocol (54) ----
     PROFILE + "::SetStatus_V1": "void",
     PROFILE + "::CreatePlayerProfile_V1": ("seq", "str", "u16", PROFILE_BODY,
@@ -457,7 +466,7 @@ def main():
         responder = R.RmcResponder(store, lambda *a, **k: None)
 
         # ---- dispatch-table completeness --------------------------------
-        check("METHODS has 110 methods", len(R.METHODS) == 110, str(len(R.METHODS)))
+        check("METHODS has 119 methods", len(R.METHODS) == 119, str(len(R.METHODS)))
         check("LAYOUT covers every method",
               set(LAYOUT) == set(R.METHODS),
               "missing=%r extra=%r" % (sorted(set(R.METHODS) - set(LAYOUT)),
@@ -663,7 +672,7 @@ def main():
                 raw, _ = seam_split(proto, method, R.Store(None))
                 if raw != ("%s::%s*" % (proto, method)).encode() + b"\x00":
                     bad_name.append((full, raw))
-            check("seam: all 110 methods answer with the '*'-suffixed name block",
+            check("seam: all 119 methods answer with the '*'-suffixed name block",
                   not bad_name, repr(bad_name[:3]))
 
             # unknown / malformed input must be None, never an exception and
@@ -787,7 +796,11 @@ def main():
                 "Subscribe_V1", "Unsubscribe_V1", "SendToChannel_V1",
                 "SendToUser_V1", "SendToGroup_V1", "Ignore_V1", "Unignore_V1")}
             conditional |= {("FriendsServiceProtocol::" + m) for m in (
-                "AddFriend_V1", "RemoveFriend_V1", "AddRecentContact_V1")}
+                "AddFriend_V1", "RemoveFriend_V1", "AddRecentContact_V1",
+                "SetComment_V1")}
+            conditional |= {("MailServiceProtocol::" + m) for m in (
+                "UploadMailToProfile_V1", "UploadMailsToProfiles_V1",
+                "BroadcastMail_V1", "DeleteAllMailsByPid_V1")}
             check("WRITER_METHODS == the methods that actually call save()",
                   set(R.WRITER_METHODS) == writes | conditional,
                   "undeclared=%r declared-but-silent=%r"
