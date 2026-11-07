@@ -6,7 +6,7 @@ Plain python, no pytest:
     source ~/tools/env.sh && python3 tools/test_rmc_services.py
 
 Exit code 0 means every check passed.  What is asserted, for EVERY method in
-``rmc_services.METHODS`` (96 of them: 54 PlayerProfile + 8 Voting + 12
+``rmc_services.METHODS`` (110 of them: 54 PlayerProfile + 8 Voting + 12
 WorldEvent + 9 BackEnd):
 
   * the dispatcher answers at all, with a COMPLETE frame (the old bug was a
@@ -202,14 +202,27 @@ COMPLETED_MISSION = ("seq", "str", "u32", "str")
 LEADERBOARD = ("seq", "u32", "u32", "u64", "u64", "u32", ("list", "u8"))
 
 LAYOUT = {
-    # ---- ChatServiceProtocol (4) ----
+    # ---- ChatServiceProtocol (12) ----
     "ChatServiceProtocol::Initialize_V1": "void",
     "ChatServiceProtocol::SignalChatReady_V1": "void",
+    "ChatServiceProtocol::SignalChatNotReady_V1": "void",
+    "ChatServiceProtocol::Subscribe_V1": "void",
+    "ChatServiceProtocol::Unsubscribe_V1": "void",
+    "ChatServiceProtocol::SendToChannel_V1": "void",
+    "ChatServiceProtocol::SendToUser_V1": "void",
+    "ChatServiceProtocol::SendToGroup_V1": "void",
+    "ChatServiceProtocol::Ignore_V1": "void",
+    "ChatServiceProtocol::Unignore_V1": "void",
+    "ChatServiceProtocol::BanPlayerFromChat_V1": "void",
+    "ChatServiceProtocol::UnbanPlayerFromChat_V1": "void",
     "ChatServiceProtocol::GetChannels_V1": ("list", ("seq", "bool", "u32", "u32")),
     "ChatServiceProtocol::GetIgnoreList_V1": ("list", "u32"),
-    # ---- FriendsServiceProtocol (2) ----
-    "FriendsServiceProtocol::GetFriends_V1": ("list", ("seq", "u32", "u32", "u32",
-                                                       "u32", "u32", "u32", "bool", "bool")),
+    # ---- FriendsServiceProtocol (6) ----
+    "FriendsServiceProtocol::GetFriends_V1": ("list", ("seq", "u32", "u32", "u32", "u32", "u32", "u32", "bool", "bool")),
+    "FriendsServiceProtocol::GetFriendsWithActivations_V1": ("list", ("seq", "u32", "u32", "u32", "u32", "u32", "u32", "bool", "bool")),
+    "FriendsServiceProtocol::AddFriend_V1": "void",
+    "FriendsServiceProtocol::RemoveFriend_V1": "void",
+    "FriendsServiceProtocol::AddRecentContact_V1": "void",
     "FriendsServiceProtocol::GetRecentContacts_V1": ("list", ("seq", "u32", "u32", "u32",
                                                               "u32", "u32", "u32", "bool", "bool")),
     # ---- MailServiceProtocol (7) ----
@@ -444,7 +457,7 @@ def main():
         responder = R.RmcResponder(store, lambda *a, **k: None)
 
         # ---- dispatch-table completeness --------------------------------
-        check("METHODS has 96 methods", len(R.METHODS) == 96, str(len(R.METHODS)))
+        check("METHODS has 110 methods", len(R.METHODS) == 110, str(len(R.METHODS)))
         check("LAYOUT covers every method",
               set(LAYOUT) == set(R.METHODS),
               "missing=%r extra=%r" % (sorted(set(R.METHODS) - set(LAYOUT)),
@@ -650,7 +663,7 @@ def main():
                 raw, _ = seam_split(proto, method, R.Store(None))
                 if raw != ("%s::%s*" % (proto, method)).encode() + b"\x00":
                     bad_name.append((full, raw))
-            check("seam: all 96 methods answer with the '*'-suffixed name block",
+            check("seam: all 110 methods answer with the '*'-suffixed name block",
                   not bad_name, repr(bad_name[:3]))
 
             # unknown / malformed input must be None, never an exception and
@@ -767,7 +780,14 @@ def main():
                 seam(*full.split("::", 1), store=counter)
                 if counter.saves:
                     writes.add(full)
+            # methods that write only when the request carries something: an
+            # empty probe body is a valid "nothing to do" and saves nothing
             conditional = {PROFILE + "::SetArk_V1"}   # writes only with items
+            conditional |= {("ChatServiceProtocol::" + m) for m in (
+                "Subscribe_V1", "Unsubscribe_V1", "SendToChannel_V1",
+                "SendToUser_V1", "SendToGroup_V1", "Ignore_V1", "Unignore_V1")}
+            conditional |= {("FriendsServiceProtocol::" + m) for m in (
+                "AddFriend_V1", "RemoveFriend_V1", "AddRecentContact_V1")}
             check("WRITER_METHODS == the methods that actually call save()",
                   set(R.WRITER_METHODS) == writes | conditional,
                   "undeclared=%r declared-but-silent=%r"

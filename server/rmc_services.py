@@ -772,6 +772,142 @@ def h_chat_void(method):
     return handler
 
 
+def _chat_store(store):
+    chat = store.state.get("chat")
+    if not isinstance(chat, dict):
+        chat = store.state["chat"] = {}
+    return chat
+
+
+def _record(container, key, value):
+    """Append ``value`` to ``container[key]`` once (a list of ids/strings)."""
+    rows = container.get(key)
+    if not isinstance(rows, list):
+        rows = container[key] = []
+    if value not in rows:
+        rows.append(value)
+    return rows
+
+
+def h_chat_subscribe(store, r, ctx):
+    """``Subscribe_V1``: join a channel (request: one String)."""
+    channel = r.string() if r.remaining() else ""
+    if channel:
+        _record(_chat_store(store), "subscribed", channel)
+        store.save()
+    return _reply(CHAT, "Subscribe_V1")
+
+
+def h_chat_unsubscribe(store, r, ctx):
+    channel = r.string() if r.remaining() else ""
+    rows = _chat_store(store).get("subscribed")
+    if isinstance(rows, list) and channel in rows:
+        rows.remove(channel)
+        store.save()
+    return _reply(CHAT, "Unsubscribe_V1")
+
+
+def h_chat_send_channel(store, r, ctx):
+    """``SendToChannel_V1``: String channel, String message -> void.
+
+    There is nobody to deliver to on a local server, so the message is recorded
+    (last 50, so the state file cannot grow without bound) and acknowledged.
+    That is enough for the client's own chat window to behave.
+    """
+    channel = r.string() if r.remaining() else ""
+    message = r.string() if r.remaining() else ""
+    if message:
+        sent = _chat_store(store).setdefault("sent", [])
+        sent.append({"channel": channel, "text": message[:400],
+                     "ts": int(time.time())})
+        del sent[:-50]
+        store.save()
+    return _reply(CHAT, "SendToChannel_V1")
+
+
+def h_chat_send_user(store, r, ctx, method="SendToUser_V1"):
+    """``SendToUser_V1`` / ``SendToGroup_V1``: String target, String message."""
+    to = r.string() if r.remaining() else ""
+    message = r.string() if r.remaining() else ""
+    if message:
+        sent = _chat_store(store).setdefault("sent", [])
+        sent.append({"to": to, "text": message[:400], "ts": int(time.time())})
+        del sent[:-50]
+        store.save()
+    return _reply(CHAT, method)
+
+
+def h_chat_ignore(store, r, ctx, method="Ignore_V1", remove=False):
+    who = r.string() if r.remaining() else ""
+    p = store.player(_ctx_pid(ctx))
+    ignored = p.get("ignored")
+    if not isinstance(ignored, list):
+        ignored = p["ignored"] = []
+    if who and not remove and who not in ignored:
+        ignored.append(who)
+        store.save()
+    elif who and remove and who in ignored:
+        ignored.remove(who)
+        store.save()
+    return _reply(CHAT, method)
+
+
+def h_chat_void_of(method):
+    """A chat method whose request we do not need: acknowledge it."""
+    def handler(store, r, ctx):
+        store.player(_ctx_pid(ctx))
+        return _reply(CHAT, method)
+    handler.__name__ = "h_chat_" + method.lower()
+    return handler
+
+
+def _friends_list(store, ctx, key):
+    p = store.player(_ctx_pid(ctx))
+    rows = p.get(key)
+    return rows if isinstance(rows, list) else []
+
+
+def h_add_recent_contact(store, r, ctx):
+    return h_add_friend_kind(store, r, ctx, "AddRecentContact_V1", "recentContacts")
+
+
+def h_add_friend_kind(store, r, ctx, method, key):
+    who = r.string() if r.remaining() else ""
+    p = store.player(_ctx_pid(ctx))
+    if who:
+        rows = p.get(key)
+        if not isinstance(rows, list):
+            rows = p[key] = []
+        if who not in rows:
+            rows.append(who)
+            store.save()
+    return _reply(FRIENDS, method)
+
+
+def h_add_friend(store, r, ctx):
+    """``AddFriend_V1``: one String (the profile id / name) -> void."""
+    who = r.string() if r.remaining() else ""
+    p = store.player(_ctx_pid(ctx))
+    if who:
+        rows = p.get("friends")
+        if not isinstance(rows, list):
+            rows = p["friends"] = []
+        if who not in rows:
+            rows.append(who)
+            store.save()
+    return _reply(FRIENDS, "AddFriend_V1")
+
+
+def h_remove_friend(store, r, ctx):
+    who = r.string() if r.remaining() else ""
+    p = store.player(_ctx_pid(ctx))
+    rows = p.get("friends")
+    if isinstance(rows, list) and who in rows:
+        rows.remove(who)
+        store.save()
+    return _reply(FRIENDS, "RemoveFriend_V1")
+
+
 def h_get_friends(store, r, ctx):
     """``FriendsServiceProtocol::GetFriends_V1``: the friend list.
 
@@ -781,6 +917,12 @@ def h_get_friends(store, r, ctx):
     """
     p = store.player(_ctx_pid(ctx))
     return _reply(FRIENDS, "GetFriends_V1", friends=p.get("friends") or ())
+
+
+def h_get_friends_with_activations(store, r, ctx):
+    p = store.player(_ctx_pid(ctx))
+    return _reply(FRIENDS, "GetFriendsWithActivations_V1",
+                  friends=p.get("friends") or ())
 
 
 def h_get_recent_contacts(store, r, ctx):
@@ -1798,15 +1940,31 @@ METHODS = {
     WORLD + "::SetReputationPoints_V1": h_we_set_reputation,
     WORLD + "::GetStats_V1": h_we_get_stats,
 
-    # ---- ChatServiceProtocol (4) ----
+    # ---- ChatServiceProtocol (12) ----
     CHAT + "::Initialize_V1": h_chat_void("Initialize_V1"),
     CHAT + "::SignalChatReady_V1": h_chat_void("SignalChatReady_V1"),
+    CHAT + "::SignalChatNotReady_V1": h_chat_void("SignalChatNotReady_V1"),
     CHAT + "::GetChannels_V1": h_chat_channels,
     CHAT + "::GetIgnoreList_V1": h_chat_ignore_list,
+    CHAT + "::Subscribe_V1": h_chat_subscribe,
+    CHAT + "::Unsubscribe_V1": h_chat_unsubscribe,
+    CHAT + "::SendToChannel_V1": h_chat_send_channel,
+    CHAT + "::SendToUser_V1": h_chat_send_user,
+    CHAT + "::SendToGroup_V1": (lambda store, r, ctx:
+                                h_chat_send_user(store, r, ctx, "SendToGroup_V1")),
+    CHAT + "::Ignore_V1": h_chat_ignore,
+    CHAT + "::Unignore_V1": (lambda store, r, ctx:
+                             h_chat_ignore(store, r, ctx, "Unignore_V1", True)),
+    CHAT + "::BanPlayerFromChat_V1": h_chat_void("BanPlayerFromChat_V1"),
+    CHAT + "::UnbanPlayerFromChat_V1": h_chat_void("UnbanPlayerFromChat_V1"),
 
-    # ---- FriendsServiceProtocol (2) ----
+    # ---- FriendsServiceProtocol (6) ----
     FRIENDS + "::GetFriends_V1": h_get_friends,
     FRIENDS + "::GetRecentContacts_V1": h_get_recent_contacts,
+    FRIENDS + "::GetFriendsWithActivations_V1": h_get_friends_with_activations,
+    FRIENDS + "::AddFriend_V1": h_add_friend,
+    FRIENDS + "::RemoveFriend_V1": h_remove_friend,
+    FRIENDS + "::AddRecentContact_V1": h_add_recent_contact,
 
     # ---- MailServiceProtocol (2) ----
     MAIL + "::GetMailCount_V1": h_mail_count,
@@ -1851,8 +2009,12 @@ VOID_METHODS = frozenset(
         "UploadVoteMultipliers_V1", "Register_V1", "Unregister_V1",
         "SetVisited_V1", "ClearWorldEventTemplates_V1",
         "UploadWorldEventTemplate_V1",
-        # chat / friends (the chat voids)
-        "Initialize_V1", "SignalChatReady_V1",
+        # chat / friends
+        "Initialize_V1", "SignalChatReady_V1", "SignalChatNotReady_V1",
+        "Subscribe_V1", "Unsubscribe_V1", "SendToChannel_V1", "SendToUser_V1",
+        "SendToGroup_V1", "Ignore_V1", "Unignore_V1",
+        "BanPlayerFromChat_V1", "UnbanPlayerFromChat_V1",
+        "AddFriend_V1", "RemoveFriend_V1", "AddRecentContact_V1",
         # mail
         "UploadMail_V1", "SetReadFlag_V1", "DeleteMail_V1", "DeleteAllMails_V1",
         # backend
@@ -1882,7 +2044,10 @@ _WRITER_SHORT_NAMES = frozenset((
     "InvalidateAllReputationPoints_V1",
     "SetFacebookAccount_V1", "ActivateUniqueKey_V1", "AddActivation_V1",
     "AddShopItem_V1", "RemoveShopItem_V1", "UploadLeaderboardTemplates_V1",
-    # chat (no chat method writes: channels/ignore lists are read-only here)
+    # chat / friends (these write the store)
+    "Subscribe_V1", "Unsubscribe_V1", "SendToChannel_V1", "SendToUser_V1",
+    "SendToGroup_V1", "Ignore_V1", "Unignore_V1",
+    "AddFriend_V1", "RemoveFriend_V1", "AddRecentContact_V1",
     # mail
     "SetReadFlag_V1", "DeleteMail_V1", "DeleteAllMails_V1",
     # voting

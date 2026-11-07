@@ -52,10 +52,19 @@ def build(proto, method, **kwargs):
         return get_friends(kwargs.get("friends", ()))
     if name == "GetRecentContacts_V1":
         return get_recent_contacts(kwargs.get("recent", ()))
+    if name == "GetFriendsWithActivations_V1":
+        return (name_block(PROTO, "GetFriendsWithActivations_V1")
+                + friends(kwargs.get("friends", ())))
+    if name in ("AddFriend_V1", "RemoveFriend_V1", "AddRecentContact_V1"):
+        return name_block(PROTO, name)
     return None
 
 
 SHAPES = {
     "GetFriends_V1": "u32 count + N x (u32 x 6, bool, bool)",
     "GetRecentContacts_V1": "u32 count + N x (u32 x 6, bool, bool)",
+    "GetFriendsWithActivations_V1": "u32 count + N x (u32 x 6, bool, bool)",
+    "AddFriend_V1": "void",
+    "RemoveFriend_V1": "void",
+    "AddRecentContact_V1": "void",
 }
