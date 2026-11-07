@@ -1086,6 +1086,50 @@ def _credit_mission(store, pid, record):
         wer[pid] = points
 
     _grant_ark_reward(store, p, record.get("id"))
+    _grant_achievement(store, p, record.get("id"))
+
+
+def _send_event_mail(store, chapter):
+    """Put the event's own intro mail in the player's mailbox.
+
+    The id is the chapter's ``InitialMail`` from ``assets.xml`` - real client
+    text, no invention - so the mail panel shows the same mail the official
+    server would have sent when the event started.
+    """
+    mail_id = content_events.chapter_mail(chapter, "initial")
+    if not mail_id:
+        return
+    p = store.player("default")
+    mails = p.get("infoMails")
+    if not isinstance(mails, dict):
+        mails = p["infoMails"] = {}
+    if str(mail_id) in mails or mail_id in mails:
+        return
+    mails[int(mail_id)] = 0                     # 0 = unread
+    if LOG is not None:
+        try:
+            LOG("RMC event mail: %s (chapter %s)" % (mail_id, chapter))
+        except Exception:                    # noqa: BLE001
+            pass
+
+
+def _grant_achievement(store, player_doc, mission_id):
+    """Unlock the mission's achievement (the client renders its own text)."""
+    achievement = content_events.mission_achievement(mission_id)
+    if not achievement:
+        return
+    items = player_doc.get("achievements")
+    if not isinstance(items, list):
+        items = player_doc["achievements"] = []
+    if any(isinstance(a, dict) and int(a.get("id") or 0) == achievement
+           for a in items):
+        return
+    items.append({"id": int(achievement), "value": int(time.time())})
+    if LOG is not None:
+        try:
+            LOG("RMC achievement: %s (mission %s)" % (achievement, mission_id))
+        except Exception:                    # noqa: BLE001
+            pass
 
 
 def _grant_ark_reward(store, player_doc, mission_id):
@@ -1267,6 +1311,7 @@ def h_get_latest_world_event(store, r, ctx):
     """
     we = _world_event_state(store)
     if content_events.event_for_day(we):
+        _send_event_mail(store, we.get("b"))
         store.save()
     event = content_events.latest_event(event=we)
     return _reply(WORLD, "GetLatestWorldEvent_V1", event=event)

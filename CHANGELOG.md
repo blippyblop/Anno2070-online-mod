@@ -45,6 +45,12 @@ Fixed
   in the docs; the key space is still undecoded, so `GetStats_V1` stays empty.
 
 Added
+- **Events send mail and unlock achievements.** A new event puts that chapter's
+  own `InitialMail` id in the mailbox (real client text: `1005860` Atomic
+  Terror, `1005939` Eden, `7111160` Global Distrust, `7211011` Nordamark,
+  `7311006` Ebashi Trench), and a solved mission unlocks its real achievement id
+  from `achievements.xml` - the client renders the name, description and icon
+  itself.
 - **World-event missions grant their real ARK items** where the shipped reward
   is an item at all: the mission->reward link is the achievement table, 7 of the
   15 rewards are DLC `ConstructionPlanItem`/`BuildingUpgradeGlobal` assets, and

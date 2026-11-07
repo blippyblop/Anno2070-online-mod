@@ -57,6 +57,14 @@ putting a real date on it, and echoing the mission GUIDs the player solved**.
   `worldEvent.reputation`.
 * The event record's progress bar is derived: solved missions of the current
   chapter out of the number it ships (e.g. 2/3), never a random number.
+* A solved mission also unlocks its **achievement** (the id from
+  `achievements.xml`, e.g. `1116925`); the client owns the name, description and
+  icon, so the Achievements tab shows the real entry.
+* When a new chapter rolls, the player receives that chapter's **own intro
+  mail** (`InitialMail` from its `WorldEvent` block - `1005860` for Atomic
+  Terror, `7311006` for the Ebashi Trench, …), so the mail panel carries the
+  event's real text. Asking for the event again in the same day never
+  duplicates it.
 * `GetStats_V1` is built from those records: per-player points and mission
   counts in list A, per-player reputation in list B, best first, capped at the
   client's four rows, with the three counters set to their totals.

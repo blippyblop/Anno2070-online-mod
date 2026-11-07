@@ -303,6 +303,41 @@ def test_ark_rewards():
           off.player("default")["arkItems"] == [], off.player("default")["arkItems"])
 
 
+def test_event_mail_and_achievement(tmp):
+    print("a new event sends its own mail and missions unlock achievements")
+    path = os.path.join(tmp, "event-mail.json")
+    store = R.open_store(path)
+    payload(WORLD, "GetLatestWorldEvent_V1", store, b"\x01\x00")
+    chapter = store.state["worldEvent"]["b"]
+    mails = store.player("default")["infoMails"]
+    expected = CE.chapter_mail(chapter, "initial")
+    check("the chapter's own InitialMail is in the mailbox",
+          {int(k): v for k, v in mails.items()} == {expected: 0}, mails)
+    payload(WORLD, "GetLatestWorldEvent_V1", store, b"\x01\x00")
+    check("asking again does not duplicate it",
+          len(store.player("default")["infoMails"]) == 1,
+          store.player("default")["infoMails"])
+    check("every chapter has an initial mail",
+          all(CE.chapter_mail(c[0]) for c in CE.WORLD_EVENT_CHAPTERS),
+          [CE.chapter_mail(c[0]) for c in CE.WORLD_EVENT_CHAPTERS])
+
+    payload(WORLD, "CompleteMission_V1", store,
+            le32(3054104) + b"\x06\x00Player\x00")     # unknown mission: no achievement
+    check("an unknown mission grants no achievement",
+          store.player("default")["achievements"] == [],
+          store.player("default")["achievements"])
+    payload(WORLD, "CompleteMission_V1", store,
+            le32(3054108) + b"\x06\x00Player\x00")
+    payload(WORLD, "CompleteMission_V1", store,
+            le32(3054108) + b"\x06\x00Player\x00")
+    items = store.player("default")["achievements"]
+    check("the mission's real achievement id is unlocked once",
+          [a["id"] for a in items] == [1116925], items)
+    reopened = R.open_store(path)
+    check("it survives a restart",
+          [a["id"] for a in reopened.player("default")["achievements"]] == [1116925])
+
+
 def test_stats_capped():
     print("the community panel never exceeds the client's 4 rows")
     state = {"completedMissions": [{"a": "P%d" % i, "id": 3054014, "ts": 0}
@@ -443,6 +478,7 @@ def main():
         test_mission_payout(tmp)
         test_career_presence(tmp)
         test_ark_rewards()
+        test_event_mail_and_achievement(tmp)
         test_stats_capped()
         test_day_rotation()
         test_state_file_is_shared(tmp)

@@ -161,6 +161,49 @@ MISSION_ARK_REWARD_TABLE = (
 SLOTS_BY_QUALITY = ((1, (0,)), (2, (0, 1)), (3, (0, 1, 2)))
 
 
+#: The mails each chapter sends, straight from its ``WorldEvent`` block in
+#: ``assets.xml`` (``InitialMail``, ``ProgressMail``, ``ConclusionMail``).  These
+#: are loca ids the client already ships, so the mail panel shows the real
+#: event text rather than anything we invent.
+CHAPTER_MAILS = (
+    (3054018, {"initial": 1005860, "progress": 1005861, "conclusion": 1005863}),
+    (3054105, {"initial": 1005939, "progress": 1005941, "conclusion": 1005946}),
+    (3058000, {"initial": 7111160, "progress": 7111162, "conclusion": 7111166}),
+    (3060000, {"initial": 7211011, "progress": 7211005, "conclusion": 7211009}),
+    (3062000, {"initial": 7311006, "progress": 7311000, "conclusion": 7311004}),
+)
+
+
+def chapter_mail(chapter, kind="initial"):
+    """Loca id of a chapter's mail (``initial``/``progress``/``conclusion``)."""
+    wanted = _int(chapter, -1)
+    for guid, mails in CHAPTER_MAILS:
+        if guid == wanted:
+            return mails.get(kind)
+    return None
+
+
+#: Achievement each mission unlocks (``achievements.xml``:
+#: ``CompleteWorldEventNNMissionMM``).  The client owns the name, description
+#: and icon; we only have to report the id and the client renders the real one.
+MISSION_ACHIEVEMENTS = (
+    (3054014, 1116913), (3054016, 1116961),
+    (3054106, 1116791), (3054107, 1117161), (3054108, 1116925),
+    (3058001, 1116871), (3058002, 1117143), (3058003, 1117142),
+    (3060001, 1116910), (3060003, 1116931),
+    (3062001, 1116916), (3062003, 1116934),
+)
+
+
+def mission_achievement(mission_id):
+    """Achievement id a mission unlocks, or ``0`` when it has none."""
+    wanted = _int(mission_id, 0)
+    for guid, achievement in MISSION_ACHIEVEMENTS:
+        if guid == wanted:
+            return achievement
+    return 0
+
+
 def mission_ark_rewards(mission_id):
     """``((item id, quality), ...)`` the ARK items a mission grants."""
     wanted = _int(mission_id, 0)
