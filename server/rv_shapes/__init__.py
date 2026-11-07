@@ -77,6 +77,7 @@ _PROTO_MODULE = {
     "playerprofileserviceprotocol": "profile",
     "votingserviceprotocol": "voting",
     "worldeventserviceprotocol": "voting",
+    "mailserviceprotocol": "mail",
     # A5 lobby / matchmaking (PN 184).  Every one of the 30 methods the
     # client's reply dispatcher (RVA 0xE04110) tests by name is answered;
     # the 17 pure setters reply with the name block only.
@@ -120,7 +121,8 @@ def build(proto, method, **kw):
 def available():
     """Which shape modules imported cleanly (for /status and the log)."""
     out = {}
-    for name in ("backend", "profile", "voting", "login", "auth", "matchmaking"):
+    for name in ("backend", "profile", "voting", "login", "auth", "matchmaking",
+                 "mail"):
         try:
             _mod(name)
             out[name] = "ok"
@@ -130,7 +132,7 @@ def available():
 
 
 # eager import so `rv_shapes.backend` etc. are attributes (cheap, pure modules)
-for _n in ("backend", "profile", "voting", "login", "auth", "matchmaking"):
+for _n in ("backend", "profile", "voting", "login", "auth", "matchmaking", "mail"):
     try:
         _mod(_n)
         globals()[_n] = _MODULES[_n]

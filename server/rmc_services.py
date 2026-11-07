@@ -73,6 +73,7 @@ if not hasattr(rv, "build"):            # pragma: no cover - defensive
 # --------------------------------------------------------------------------
 
 PROFILE = "PlayerProfileServiceProtocol"
+MAIL = "MailServiceProtocol"
 VOTING = "VotingServiceProtocol"
 WORLD = "WorldEventServiceProtocol"
 BACKEND = "BackEndServiceProtocol"
@@ -287,6 +288,10 @@ def _migrate_state(state):
                            int(item.get("c") or 0))
                     if key in seed_ids:
                         item["src"] = "seed"
+            mails = doc.get("infoMails")
+            if isinstance(mails, dict) and any(isinstance(k, str) for k in mails):
+                doc["infoMails"] = {int(k): v for k, v in mails.items()
+                                    if str(k).lstrip("-").isdigit()}
             rep = doc.get("reputation")
             if not isinstance(rep, dict):
                 doc["reputation"] = {}
@@ -389,7 +394,17 @@ class Store:
                 os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
                 self.state["schema"] = STATE_SCHEMA
                 with open(tmp, "w", encoding="utf-8") as f:
-                    json.dump(self.state, f, indent=1, sort_keys=True)
+                    try:
+                        json.dump(self.state, f, indent=1, sort_keys=True)
+                    except TypeError:
+                        # sort_keys compares the keys, and a document can hold
+                        # an int key and its JSON string beside each other (a
+                        # mail id read from disk as "0" next to an int one).
+                        # Losing the whole save over the *order* of the keys is
+                        # far worse than an unsorted file.
+                        f.seek(0)
+                        f.truncate()
+                        json.dump(self.state, f, indent=1, sort_keys=False)
                     f.flush()
                     try:
                         os.fsync(f.fileno())
@@ -726,6 +741,41 @@ def h_reset_helper_quests(store, r, ctx):
     p["helperQuests"] = []
     store.save()
     return _reply(PROFILE, "ResetHelperQuests_V1")
+
+
+def h_mail_count(store, r, ctx):
+    """``MailServiceProtocol::GetMailCount_V1``: three u32 (total, unread, 0).
+
+    The client polls this once per session and badges the mail icon with it.
+    The number is the player's real mailbox: every info mail we deliver (the
+    world-event intro mail, for example) counts, and one counts as unread while
+    its ``infoMails`` value is 0 - the same map ``SetInfoMailRead_V1`` flips.
+    """
+    p = store.player(_ctx_pid(ctx))
+    mails = _int_keyed(p.get("infoMails", {}))
+    unread = sum(1 for flag in mails.values() if not _as_int(flag, 1))
+    return _reply(MAIL, "GetMailCount_V1", total=len(mails), unread=unread)
+
+
+def h_upload_mail(store, r, ctx):
+    """``MailServiceProtocol::UploadMail_V1``: the client reports its mailbox.
+
+    Request (captured): ``u32 u32 String String``.  The two strings are the
+    mail's own ids; we keep what the client reports so the count and the
+    mailbox never disagree, and never invent mail the player did not get.
+    """
+    p = store.player(_ctx_pid(ctx))
+    first = r.u32() if r.remaining() >= 4 else 0
+    second = r.u32() if r.remaining() >= 4 else 0
+    a = r.string() if r.remaining() else ""
+    b = r.string() if r.remaining() else ""
+    if not (a or b):
+        return _reply(MAIL, "UploadMail_V1")
+    p.setdefault("uploadedMail", []).append(
+        {"first": first, "second": second, "a": a, "b": b,
+         "ts": int(time.time())})
+    store.save()
+    return _reply(MAIL, "UploadMail_V1")
 
 
 def h_get_info_mails(store, r, ctx):
@@ -1103,7 +1153,9 @@ def _send_event_mail(store, chapter):
     mails = p.get("infoMails")
     if not isinstance(mails, dict):
         mails = p["infoMails"] = {}
-    if str(mail_id) in mails or mail_id in mails:
+    mails = {int(k): v for k, v in mails.items() if str(k).lstrip("-").isdigit()}
+    p["infoMails"] = mails
+    if int(mail_id) in mails:
         return
     mails[int(mail_id)] = 0                     # 0 = unread
     if LOG is not None:
@@ -1566,6 +1618,10 @@ METHODS = {
     WORLD + "::SetReputationPoints_V1": h_we_set_reputation,
     WORLD + "::GetStats_V1": h_we_get_stats,
 
+    # ---- MailServiceProtocol (2) ----
+    MAIL + "::GetMailCount_V1": h_mail_count,
+    MAIL + "::UploadMail_V1": h_upload_mail,
+
     # ---- BackEndServiceProtocol (9) ----
     BACKEND + "::GetVersion_V1": h_backend_get_version,
     BACKEND + "::GetProtocolVersions_V1": h_backend_protocol_versions,
@@ -1600,6 +1656,8 @@ VOID_METHODS = frozenset(
         "UploadVoteMultipliers_V1", "Register_V1", "Unregister_V1",
         "SetVisited_V1", "ClearWorldEventTemplates_V1",
         "UploadWorldEventTemplate_V1",
+        # mail
+        "UploadMail_V1",
         # backend
         "ScheduleMaintenance_V1", "StopMaintenance_V1",
     ))

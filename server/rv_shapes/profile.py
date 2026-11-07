@@ -599,6 +599,17 @@ def _lb_template(el):
     )
 
 
+def mail_count(total=0, unread=0, reserved=0):
+    """``MailCount`` = ``u32; u32; u32`` (ddl_ser.c: 0x140dfa6a0 reader).
+
+    The three fields are undocumented; the natural reading is
+    (all mails, unread mails, reserved), and that is what the server fills.  A
+    zero document is what the client has always received, so any change here is
+    visible as a badge on the mail icon rather than as new UI.
+    """
+    return u32(total) + u32(unread) + u32(reserved)
+
+
 def leaderboard_templates(items=()):
     """``list<LeaderboardTemplate>``: u32 count + count x (32 + n bytes)."""
     seq = _seq(items)

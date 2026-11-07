@@ -6,7 +6,7 @@ Plain python, no pytest:
     source ~/tools/env.sh && python3 tools/test_rmc_services.py
 
 Exit code 0 means every check passed.  What is asserted, for EVERY method in
-``rmc_services.METHODS`` (83 of them: 54 PlayerProfile + 8 Voting + 12
+``rmc_services.METHODS`` (85 of them: 54 PlayerProfile + 8 Voting + 12
 WorldEvent + 9 BackEnd):
 
   * the dispatcher answers at all, with a COMPLETE frame (the old bug was a
@@ -202,6 +202,9 @@ COMPLETED_MISSION = ("seq", "str", "u32", "str")
 LEADERBOARD = ("seq", "u32", "u32", "u64", "u64", "u32", ("list", "u8"))
 
 LAYOUT = {
+    # ---- MailServiceProtocol (2) ----
+    "MailServiceProtocol::GetMailCount_V1": ("seq", "u32", "u32", "u32"),
+    "MailServiceProtocol::UploadMail_V1": "void",
     # ---- PlayerProfileServiceProtocol (54) ----
     PROFILE + "::SetStatus_V1": "void",
     PROFILE + "::CreatePlayerProfile_V1": ("seq", "str", "u16", PROFILE_BODY,
@@ -426,7 +429,7 @@ def main():
         responder = R.RmcResponder(store, lambda *a, **k: None)
 
         # ---- dispatch-table completeness --------------------------------
-        check("METHODS has 83 methods", len(R.METHODS) == 83, str(len(R.METHODS)))
+        check("METHODS has 85 methods", len(R.METHODS) == 85, str(len(R.METHODS)))
         check("LAYOUT covers every method",
               set(LAYOUT) == set(R.METHODS),
               "missing=%r extra=%r" % (sorted(set(R.METHODS) - set(LAYOUT)),
@@ -632,7 +635,7 @@ def main():
                 raw, _ = seam_split(proto, method, R.Store(None))
                 if raw != ("%s::%s*" % (proto, method)).encode() + b"\x00":
                     bad_name.append((full, raw))
-            check("seam: all 83 methods answer with the '*'-suffixed name block",
+            check("seam: all 85 methods answer with the '*'-suffixed name block",
                   not bad_name, repr(bad_name[:3]))
 
             # unknown / malformed input must be None, never an exception and

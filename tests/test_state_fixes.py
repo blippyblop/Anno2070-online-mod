@@ -338,6 +338,54 @@ def test_event_mail_and_achievement(tmp):
           [a["id"] for a in reopened.player("default")["achievements"]] == [1116925])
 
 
+def test_mixed_key_save(tmp):
+    print("a save never fails because keys have different types")
+    path = os.path.join(tmp, "mixed.json")
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump({"players": {"default": {"infoMails": {"0": 0}}}}, fh)
+    store = R.open_store(path)
+    check("string keys are normalised on load",
+          store.player("default")["infoMails"] == {0: 0},
+          store.player("default")["infoMails"])
+    # a mixed document must still save (json sort_keys compares keys)
+    store.player("default")["infoMails"] = {0: 0, "5": 1}
+    store.save()
+    saved = json.load(open(path, encoding="utf-8"))
+    check("the save went through", saved["players"]["default"]["infoMails"] != {},
+          saved["players"]["default"]["infoMails"])
+    check("both entries are on disk",
+          sorted(saved["players"]["default"]["infoMails"]) == ["0", "5"],
+          saved["players"]["default"]["infoMails"])
+    # and the event mail path cannot recreate the mixture
+    store2 = R.open_store(os.path.join(tmp, "mixed2.json"))
+    store2.player("default")["infoMails"] = {"0": 0}
+    payload(WORLD, "GetLatestWorldEvent_V1", store2, b"\x01\x00")
+    store2.save()
+    keys = json.load(open(os.path.join(tmp, "mixed2.json"), encoding="utf-8"))[
+        "players"]["default"]["infoMails"]
+    check("the event mail lands beside the old key", len(keys) == 2, keys)
+
+
+def test_mail_count(tmp):
+    print("the mail badge counts the real mailbox")
+    path = os.path.join(tmp, "mailcount.json")
+    store = R.open_store(path)
+    wire = body_of(R.MAIL, "GetMailCount_V1", store)
+    check("an empty mailbox is 0/0", wire == b"\x00" * 12, wire)
+    payload(WORLD, "GetLatestWorldEvent_V1", store, b"\x01\x00")   # sends the event mail
+    wire = body_of(R.MAIL, "GetMailCount_V1", store)
+    check("the event mail shows as one unread",
+          wire == le32(1) + le32(1) + le32(0), wire)
+    mail_id = list(store.player("default")["infoMails"])[0]
+    R.respond_payload(PROFILE, "SetInfoMailRead_V1", store=store,
+                      body=le32(mail_id) + b"\x01")
+    wire = body_of(R.MAIL, "GetMailCount_V1", store)
+    check("reading it clears the unread count but not the total",
+          wire == le32(1) + le32(0) + le32(0), wire)
+    check("the shape is registered for the mail protocol",
+          "GetMailCount_V1" in __import__("rv_shapes").mail.SHAPES)
+
+
 def test_stats_capped():
     print("the community panel never exceeds the client's 4 rows")
     state = {"completedMissions": [{"a": "P%d" % i, "id": 3054014, "ts": 0}
@@ -479,6 +527,8 @@ def main():
         test_career_presence(tmp)
         test_ark_rewards()
         test_event_mail_and_achievement(tmp)
+        test_mixed_key_save(tmp)
+        test_mail_count(tmp)
         test_stats_capped()
         test_day_rotation()
         test_state_file_is_shared(tmp)
