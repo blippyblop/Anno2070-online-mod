@@ -98,7 +98,7 @@ server/               the backend: SDK HTTP, notification websocket, RV/RMC (83 
                       PRUDP framing, conquest HTTP
 loader/               our own upc_r2 client DLL (C source + prebuilt) - replaces the
                       Ubisoft DLL the game imports
-docs/                 install, how it works, known issues, world events, protocol notes
+docs/                 install, playing guide, how it works, known issues, world events
 tests/                offline suites, no game needed (tests/run_all.sh)
 .github/workflows/    CI: build + attach the exe set to a release on every v* tag
 ```

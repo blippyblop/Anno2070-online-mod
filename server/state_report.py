@@ -109,6 +109,42 @@ def event_lines(state):
                                               "(%s)" % ", ".join(map(str, solved)) if solved else "")]
 
 
+def summary(state):
+    """The handful of numbers a player cares about, for diffing two saves."""
+    player = player_of(state)
+    rep = player.get("reputation")
+    total = 0
+    if isinstance(rep, dict):
+        for value in rep.values():
+            try:
+                total += int(value)
+            except (TypeError, ValueError):
+                pass
+    we = state.get("worldEvent") if isinstance(state.get("worldEvent"), dict) else {}
+    votes = state.get("voting") if isinstance(state.get("voting"), dict) else {}
+    infos = votes.get("infos") if isinstance(votes.get("infos"), dict) else {}
+    mine = 0
+    for slot in infos.values():
+        try:
+            if int((slot or {}).get("f6", -1)) >= 0:
+                mine += 1
+        except (TypeError, ValueError):
+            pass
+    return {
+        "career": total,
+        "ark": len(ark_rows(player)),
+        "mails": len(player.get("infoMails") or {}),
+        "achievements": len(player.get("achievements") or []),
+        "votes": mine,
+        "missions": len(we.get("completedMissions") or []),
+    }
+
+
+LABELS = {"career": "career points", "ark": "ARK items", "mails": "mails",
+          "achievements": "achievements", "votes": "own votes",
+          "missions": "missions solved"}
+
+
 def main(argv):
     path = argv[1] if len(argv) > 1 else default_state_path()
     path = os.path.abspath(path)
@@ -153,6 +189,18 @@ def main(argv):
         print(line)
     for line in event_lines(state):
         print(line)
+
+    backup = path + ".bak"
+    if os.path.isfile(backup):
+        before = load(backup)
+        if isinstance(before, dict):
+            was, now = summary(before), summary(state)
+            changes = [(LABELS[k], was.get(k, 0), now.get(k, 0)) for k in LABELS
+                       if was.get(k, 0) != now.get(k, 0)]
+            if changes:
+                print("    since the previous save:")
+                for label, old, new in changes:
+                    print("      %-16s %s -> %s" % (label, old, new))
     print("=" * 69)
     return 0
 

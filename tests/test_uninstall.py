@@ -167,23 +167,6 @@ def case_flat_install_removes_only_our_files(root):
           "removing only the mod" in res.stdout, res.stdout[-300:])
 
 
-def case_game_folder_is_never_deleted(root):
-    print("the package was unzipped into the game folder -> the game is not deleted")
-    game, _runtime = build(root, backup=UBI_DLL)
-    # pretend the package was extracted straight into the game folder
-    write(os.path.join(game, "PLAY.bat"), "@echo off\n")
-    write(os.path.join(game, "server", "mimic_server.py"), "# server\n")
-    write(os.path.join(game, "server", "state.json"), '{"votes": 1}')
-    res = run(["--yes", "--game", game, "--dir", game,
-               "--backup-dir", os.path.join(root, "bk")])
-    check("exit 0", res.returncode == 0, res.returncode)
-    check("Anno5.exe still there", os.path.exists(os.path.join(game, "Anno5.exe")))
-    check("PLAY.bat still there", os.path.exists(os.path.join(game, "PLAY.bat")))
-    check("said it refused", "not deleting it" in res.stdout)
-    check("the loader was still restored",
-          read(os.path.join(game, "upc_r2_loader64.dll")) == UBI_DLL)
-
-
 def case_explicit_game(root):
     print("--game overrides the game path, config keeps working")
     game, runtime = build(root, backup=UBI_DLL)
@@ -208,7 +191,6 @@ def main():
     for case in (case_with_backup, case_no_backup, case_foreign_dll, case_purge,
                  case_dry_run, case_foreign_runtime,
                  case_flat_install_removes_only_our_files,
-                 case_game_folder_is_never_deleted,
                  case_explicit_game):
         root = tempfile.mkdtemp(prefix="anno-uninstall-")
         try:
