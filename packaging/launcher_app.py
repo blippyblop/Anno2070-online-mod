@@ -123,6 +123,23 @@ def port_open(port, host="127.0.0.1", timeout=0.4):
         return False
 
 
+def server_ready(port, host="127.0.0.1", timeout=2.0):
+    """True when the server ANSWERS an HTTP request, not just accepts a socket.
+
+    The listener opens before the handler threads are warm; launching the game
+    into that window is one of the ways the client's own login can time out, so
+    the launcher waits for a real answer (the same probe PLAY.bat does).
+    """
+    import urllib.request
+    try:
+        with urllib.request.urlopen("http://%s:%d/v3/applications/0" % (host, port),
+                                    timeout=timeout) as resp:
+            resp.read(1)
+        return True
+    except Exception:                                # noqa: BLE001
+        return False
+
+
 def server_command(cfg_path):
     """How to start the server: this exe in --server mode, or python in dev."""
     log_dir = cfg_get(read_config(cfg_path), "server", "log_dir", "logs")
@@ -324,6 +341,14 @@ def launch(cfg_path):
         time.sleep(1)
     else:
         print(f"      WARNING: port {port} did not open; starting the game anyway")
+    # a listener that accepts a socket is not a server that answers yet
+    for _ in range(20):
+        if server_ready(port):
+            print("      server is answering")
+            break
+        time.sleep(1)
+    else:
+        print("      WARNING: the server did not answer yet; starting the game anyway")
 
     env = dict(os.environ)
     env["UPC_CONQUEST_SUPPRESS_MS"] = "0"

@@ -7,6 +7,7 @@ setlocal enabledelayedexpansion
 cd /d "%~dp0"
 set "SV=logs\server.log"
 
+if /i "%~1"=="selftest" goto :selftest
 if not exist "%SV%" (
   echo No server log yet - run PLAY.bat first.
   goto :end
@@ -53,6 +54,7 @@ findstr /c:"CONQ-HTTP <-" "%SV%" >nul && (echo    conquest server   : reached) |
 findstr /c:"MatchMakingServiceProtocol::" "%SV%" >nul && (echo    multiplayer lobby : reached) || echo    multiplayer lobby : not reached
 
 echo.
+:selftest
 if /i "%~1"=="selftest" (
   set "TPY="
   where python >nul 2>&1 && set "TPY=python"
@@ -112,4 +114,6 @@ if /i "!k!"=="log_dir"     set "LOGDIR=!v!"
 goto :eof
 
 :end
-if /i not "%1"=="nopause" pause
+if /i "%1"=="nopause" goto :eof
+if /i "%2"=="nopause" goto :eof
+pause

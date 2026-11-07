@@ -137,6 +137,22 @@ echo       Starting the game anyway.
 goto :launch
 :portok
 echo       server is up.
+rem The port opens before the server's handlers are warm.  Launching into that
+rem window is one of the ways a client's own login can time out, so wait until
+rem the server actually ANSWERS an HTTP request, not just accepts a connection.
+set /a warm=0
+:warmwait
+"!PY!" -c "import urllib.request,sys; urllib.request.urlopen('http://127.0.0.1:!HPORT!/v3/applications/0', timeout=2).read(1)" >nul 2>&1
+if not errorlevel 1 goto :warmok
+set /a warm+=1
+if !warm! lss 20 (
+  call :sleep 1
+  goto :warmwait
+)
+echo       WARNING: the server accepts connections but did not answer yet.
+goto :launch
+:warmok
+echo       server is answering.
 
 :launch
 echo [5/5] starting Anno 2070

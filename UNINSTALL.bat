@@ -224,7 +224,10 @@ if exist "%PKG%\Anno5.exe" (
   rem folder would delete the game, so remove exactly the files the package
   rem brought and leave everything else alone.
   echo       this folder is the game folder - removing only the mod's files
-  for %%F in (PLAY.bat INSTALL.bat UNINSTALL.bat PROGRESS.bat SELFTEST.bat RUN-TESTS.bat ^
+  rem UNINSTALL.bat itself is deleted LAST (see :shortcuts): cmd is still
+  rem reading this file, and removing it mid-run produces "The batch file cannot
+  rem be found." while the parent copy finishes.
+  for %%F in (PLAY.bat INSTALL.bat PROGRESS.bat SELFTEST.bat RUN-TESTS.bat ^
               READ-ME-FIRST.txt README.md VERSION LICENSE config.ini) do (
     if exist "%PKG%\%%F" del /f /q "%PKG%\%%F" >nul 2>&1
   )
@@ -272,6 +275,8 @@ for %%D in (
   )
 )
 echo       done
+rem now safe: the parent has finished reading this file
+if exist "%PKG%\UNINSTALL.bat" del /f /q "%PKG%\UNINSTALL.bat" >nul 2>&1
 
 echo.
 echo =====================================================================
