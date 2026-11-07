@@ -1,7 +1,7 @@
 # Update an EXISTING install in place, keeping the player's own files.
 #
 #   powershell -ExecutionPolicy Bypass -File packaging\update-install.ps1 `
-#       -Game 'C:\projects\Anno 2070' -Package C:\pkgu.zip
+#       -Game 'C:\projects\Anno2070' -Package C:\pkgu.zip
 #
 # Copies PLAY/PROGRESS/INSTALL/UNINSTALL, server/, docs/, loader/, tests/ from
 # the package over an install that was extracted straight into the game folder,
@@ -15,7 +15,7 @@
 #   * prints a verification block (version, single-launch, name terminator fix,
 #     state report, uninstaller, imports).
 param(
-    [string]$Game    = 'C:\projects\Anno 2070',
+    [string]$Game    = 'C:\projects\Anno2070',
     [string]$Package = 'C:\pkgu.zip'
 )
 $ErrorActionPreference = 'Stop'
