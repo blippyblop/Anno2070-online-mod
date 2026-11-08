@@ -7,6 +7,14 @@ settles it._
 
 ## What the client actually asks for
 
+**Live correction (2026-11-08, first session on the fixed build):** the client
+**does** call `GetReputationPoints_V1` - twice within one session, right after a
+World Council vote, and it was answered `{0: 50, 1: 0, 2: 50}` (see
+`logs/server.log`). It is not a *login* call (a plain login never issues it), so
+the census below is still right about the login chain - it was wrong to conclude
+the document is never read at all. Treat the map as read-on-demand: the vote
+refreshes the career page.
+
 Census over 243 captured logins (`runs/*/server.log`):
 
 ```

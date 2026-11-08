@@ -119,46 +119,95 @@ def u32_at(data, off):
     return int.from_bytes(raw.ljust(4, b"\x00"), "little")
 
 
-#: Every client RMC **request body** begins with this many bytes of what the
-#: engine calls the request *kind* (a u32 class word, ``0`` in every capture we
-#: own).  The arguments follow it.  Reading from offset 0 shifts every argument
-#: by one word: ``Vote_V1``'s ``(id, faction)`` arrives as ``(0, id)``, so a
-#: council vote (id 1001) was read as faction 1001, ``GetVoteCount_V1`` always
-#: saw id 0, and ``SetArkItems_V1`` read the class word as its list count and
-#: cleared the box.  Proof in the captured logs: no-argument methods send a bare
-#: ``00 00 00 00`` (93x), ``GetVoteCount_V1`` sends ``00 00 00 00 | e9 03 00 00``
-#: (id 1001 at offset 4), and ``UpdateUPCActivations_V1`` sends
-#: ``00 00 00 00 | 0a 00 "127.0.0.1\0"`` -- a Quazal String can only start at 4.
+#: Every client RMC **request body** starts with a u32 ``kind`` word.  ``0``
+#: means "the arguments follow immediately"; **N > 0 means "N type names are
+#: declared first"** - the reply (or argument) types the client expects, each as
+#: a Quazal String followed by a u16 flag (1).  Reading from offset 0 shifted
+#: every argument by one word: ``Vote_V1``'s ``(id, faction)`` arrived as
+#: ``(0, id)``, so a council vote (id 1001) was read as faction 1001 and
+#: ``GetVoteCount_V1`` always saw id 0.
+#:
+#: Both shapes are in the live captures (2026-11-08 session, 349 log lines):
+#:
+#:   00 00 00 00 | 19 74 0f 00                     SetStatus_V1 (kind 0, args)
+#:   00 00 00 00 | e9 03 00 00                     GetVoteCount_V1 (id 1001)
+#:   01 00 00 00 | 08 00 "ArkItem\0" | 01 00          GetArkItems_V1 (no args)
+#:   01 00 00 00 | 0a 00 "VoteEntry\0" | 01 00 | e9 03 00 00 | 0a 00 00 00
+#:                                                GetLastVoters_V1 (id, count)
+#:   02 00 00 00 | "WorldEventStats\0" | 01 00 | "WorldEventStatsEntry\0" | 01 00
+#:                                                WorldEvent GetStats_V1 (nested)
+#:
+#: So the type block must be skipped, not just the kind word: with only a 4-byte
+#: skip, ``GetLastVoters_V1`` read the length of the string "VoteEntry" as its
+#: election id and the letters "Vote" as its limit.
 _REQUEST_PREFIX = 4
 
-#: Request kinds already warned about (see :func:`request_reader`).
+#: Guard against a garbage count turning into a long parse.
+_MAX_DECLARED_TYPES = 16
+
+#: (kind, declared types) already logged (see :func:`request_reader`).
 _SEEN_REQUEST_KINDS = set()
 
 
-def request_reader(body=b""):
-    """A :class:`Reader` over one request body, positioned after the prologue.
+def _skip_declared_types(data):
+    """``(offset_of_the_arguments, [type names])`` for one request body.
 
-    Use this for *wire* bodies (what the client actually sent).  A body shorter
-    than the prologue is read from 0, so a hand-built argument-only body still
-    parses instead of silently reading nothing.
+    A body whose declared-type block does not parse cleanly is treated as
+    "arguments start right after the kind word", so a shape we have not seen can
+    never move the cursor into nonsense.
+    """
+    kind = int.from_bytes(data[:_REQUEST_PREFIX], "little")
+    names = []
+    if kind == 0:
+        return _REQUEST_PREFIX, names
+    if kind > _MAX_DECLARED_TYPES:
+        return _REQUEST_PREFIX, names
+    pos = _REQUEST_PREFIX
+    for _ in range(kind):
+        if pos + 2 > len(data):
+            return _REQUEST_PREFIX, []
+        size = int.from_bytes(data[pos:pos + 2], "little")
+        pos += 2
+        if size < 2 or pos + size > len(data):
+            return _REQUEST_PREFIX, []
+        raw = data[pos:pos + size]
+        pos += size
+        if pos + 2 <= len(data):                 # the per-entry flag (always 1)
+            pos += 2
+        try:
+            names.append(raw.rstrip(b"\x00").decode("ascii"))
+        except UnicodeDecodeError:               # pragma: no cover
+            return _REQUEST_PREFIX, []
+    return pos, names
+
+
+def request_reader(body=b""):
+    """A :class:`Reader` over one request body, positioned at its arguments.
+
+    Use this for *wire* bodies (what the client actually sent): it skips the
+    u32 kind word and, when the kind declares types, the declared-type block in
+    front of the arguments.  A body shorter than the kind word is read from 0, so
+    a hand-built argument-only body still parses instead of reading nothing.
+
+    The declared type names are logged once per ``(kind, names)`` - they are the
+    client telling us which reply type it expects, which is free ground truth for
+    the shape modules.
     """
     try:
         data = bytes(body or b"")
     except Exception:                                # pragma: no cover
         data = b""
-    if len(data) >= _REQUEST_PREFIX:
-        kind = int.from_bytes(data[:_REQUEST_PREFIX], "little")
-        if kind and kind not in _SEEN_REQUEST_KINDS:
-            # every capture we own has 0 here.  A non-zero kind means the
-            # arguments are preceded by a name-tagged type block we have never
-            # decoded, so the fields below may be misaligned: say so once, with
-            # the bytes, instead of silently reading garbage.
-            _SEEN_REQUEST_KINDS.add(kind)
+    if len(data) < _REQUEST_PREFIX:
+        return Reader(data)
+    offset, names = _skip_declared_types(data)
+    if names or int.from_bytes(data[:_REQUEST_PREFIX], "little"):
+        key = (int.from_bytes(data[:_REQUEST_PREFIX], "little"), tuple(names))
+        if key not in _SEEN_REQUEST_KINDS:
+            _SEEN_REQUEST_KINDS.add(key)
             if LOG is not None:
-                LOG("WARNING request prologue kind=%d (unproven layout) hex=%s"
-                    % (kind, data[:64].hex()))
-        return Reader(data, _REQUEST_PREFIX)
-    return Reader(data)
+                LOG("request declares %d type(s) %r (kind word %d)"
+                    % (len(names), names, key[0]))
+    return Reader(data, offset)
 
 
 class Reader:

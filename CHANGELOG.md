@@ -2,7 +2,42 @@
 
 ## 0.1.2 - 2026-11-08
 
+Deployed
+- Installed to `C:\projects\Anno2070` with `packaging/update-install.ps1`: the
+  running server is stopped first, everything it touches is backed up to
+  `_backup-before-update-<stamp>.zip`, the save is parked and restored, and the
+  update verifies itself (version, single-launch, name terminator, 119 methods).
+  Verified on the host: `SELFTEST PASSED`, `ALL LIVE PROBES PASSED` on port 8443.
+- New `server/repair_state.py` (+ tests): repairs a save the pre-0.1.2 build
+  damaged - the request-prologue bug stored an impossible ARK record (socket
+  quality 1.9 billion) and achievements with id 0. The tool drops only provably
+  invalid data, refills the documented starter box, keeps a
+  `state.json.before-repair-<stamp>` copy and is idempotent. The player's live
+  save on the host was repaired with it (6 starter items restored, career 50 and
+  the senate vote untouched).
+
+Verified live (first session on the new build, `logs/server.log`)
+- `Vote_V1` with the real 12-byte council body
+  (`00 00 00 00 | e9 03 00 00 | 02 00 00 00` = id 1001, faction Tech) is counted
+  on the **council** slot (`counts["1"] = {2: 1}`), credited (`reputation`
+  `{0: 50, 2: 50}`) and pays exactly once (`rewarded {"1:default": 2}`).
+- `GetReputationPoints_V1` is **called by the client** after a vote and answered
+  `{0: 50, 1: 0, 2: 50}` - the career map is read on demand, not at login.
+- an achievement is stored with its **real id** (`1116866`), not `0`.
+- both `WARNING request prologue kind=1/2` lines in that session are what led to
+  the declared-type block above.
+
 Fixed
+- **The request prologue also declares types, and that is now skipped.**
+  Caught live on the first session of the fixed build: the leading u32 is a
+  *count of declared type names* that follow it, each a String + u16 flag, and
+  the arguments come after them (`GetArkItems_V1` declares `ArkItem`,
+  `GetLastVoters_V1` declares `VoteEntry` and THEN sends `(id, count)`, World
+  Event `GetStats_V1` declares two nested types). Skipping only 4 bytes made
+  `GetLastVoters_V1` read the length of the string "VoteEntry" as its election
+  id, so the voter list came from the wrong election. `request_reader()` now
+  skips the block (bounded, with a safe fallback) and logs the declared names
+  once - they confirm each reply's shape for free.
 - **The 4-byte request prologue (the root cause of most of the 2026-11-08
   reports).** Every client RMC request body begins with a `u32` class word (0 in
   every capture) before its arguments; the handlers read from offset 0, so every

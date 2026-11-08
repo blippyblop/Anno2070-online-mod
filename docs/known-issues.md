@@ -118,29 +118,79 @@ may warn or quarantine it. Build the loader yourself from
 **Symptom:** the Ark's **Politics** tab cannot be opened; hovering it shows that
 sentence.
 
-**Cause (proven, client-side):** that sentence is loca id **21412007**
-(`eng1.rda:data/loca/eng/txt/tt_disabled.txt:263`), and it is the
-**disabled-state tooltip** of the Ark's `POLTITCS_TAB` window
-(`Game.cdf` offset `0xc999c`, window hash `1427912439`). The tab is greyed out
-by the client's own enable condition before any request is made, so **no server
-payload can change it** - the senate and World Council *frames* are alive (they
-poll `GetVoteCount_V1`/`GetLastVoters_V1` and accept votes), it is only this tab
-that is unreachable.
+### What the tab is
 
-**What the server already does:** both elections are served with their real
-documents, a vote is recorded per election and pays 50 career reputation once
-per election, and the counts/voter lists come back per election id
-(`0` = senate, `1001` = World Council).
+The Ark has exactly three tabs, all visible in `guidata64/Game.cdf`:
+`ARK_STORAGE_TAB`, `ARK_UPGRADE_TAB` and `ARK_POLITICS_TAB` (the game spells it
+`POLTITCS_TAB`). The politics tab is the local view of the **world's** political
+state. Its own tooltip, and the strings the panel fills, come from the shipped
+localisation (`eng1.rda`):
 
-**How to identify the enabling flag** (needs a live session, so it waits for the
-host to come back):
+| loca id | file | text |
+|---|---|---|
+| 11412007 | `tt_normal.txt` | **Politics** - "Left click to view the current World Patron and voting results of the Senate." |
+| 21412007 | `tt_disabled.txt` | **Politics** - "Connection to the World Council or Senate not possible at this time." |
+| 11002778 | `tt_normal.txt` | Senate - "Laws are passed in the Senate that may be both an advantage and a disadvantage to all players. Frequent votes take place." |
+| 1000798 | `interface.txt` | "World Patron until [WORLDPATRON_END_DATE]: [CURRENT_WORLDPATRON_NAME]" |
+| 1000799 | `interface.txt` | "The next World Patron vote will begin on: [TIME_WHEN_WORLDPATRON_VOTE_STARTS]" |
+| 1000765 | `interface.txt` | "Winner of the last Senate vote: [SENATE_VOTE_WINNER] ..." |
+| 1000761/62 | `interface.txt` | "The following item on the agenda is up for vote in the Senate: ..." / "The next Senate vote will begin on: ..." |
 
-1. serve clearly distinct counts per slot (already the case - 0 and 1001 no
-   longer share bars) and confirm the tab state does not change,
-2. run one launch with the local server **off** (baseline) and compare the tab's
-   state; if it is disabled there too, the condition is not "server reachable",
-3. hook `0x1403d66c7` / `0x1403d763c` (the window's enable/update path) and log
-   the flag being tested, then serve the value it wants.
+So 21412007 is the **disabled-state variant of the tab's own tooltip**, and the
+two ids differ by exactly **+10,000,000** - the engine's tooltip convention
+(98 such normal/disabled pairs exist in the two loca files, e.g. 11000064 ->
+21000064 "Not available offline"). The tab is not broken; it is *greyed out*,
+and the game prints its "disabled" text.
 
-Until then the honest statement is: the Politics tab is a client-side gate we
-cannot open from the server, and everything behind it already works.
+### Why it is greyed out
+
+The tab's content is not voting-protocol data. The Ark's main-menu content binds
+six **game-state** properties by name (`FUN_14074a240`, verified by resolving
+every RIP-relative property binding in that function):
+
+```
+m_WorldPatronGUID        who is World Patron right now
+m_SenateEffectGUID       which senate law is currently in effect
+m_BlackSmokerStartTime   world event timing
+m_EnableTownAcquisition  world rule
+m_PlayerArkFeedback      the Ark's own feedback state
+m_DynamicAmbientList     world ambience
+```
+
+A **World Patron is an elected player of a live world**, and the Senate effect is
+a law the whole world shares. Neither can exist on a single-player local server:
+there is no world session, no other players, and therefore no patron GUID - so
+the client disables the tab before it ever talks to us. It is also not
+deliverable over RMC: none of the **153** client methods across the ten
+protocols carries a patron, an effect GUID or a senate agenda (checked against
+`server/client_methods.json`, which is extracted from the client itself).
+
+That is the honest bottom line: **no server payload can open this tab.** What it
+would show (patron name + expiry, senate agenda, last winner, next vote times)
+are world-wide facts a local server does not have.
+
+### What we do serve, and what to try next
+
+Both elections are live: `GetVotingInfos_V1` returns two `VotingInfo` documents
+(senate key 0 / vote id 0, World Council key 1 / vote id 1001), with a running
+flag and three packed dates; `GetVoteCount_V1`/`GetLastVoters_V1` answer per
+election id; `Vote_V1` records the vote and pays 50 career reputation once per
+election. The main-menu **Senate vote** and **World Council vote** entries are
+the working face of the same feature.
+
+Ordered experiments for the next live session (each one is a single knob):
+
+1. **Serve a vote *result*.** Our `VotingInfo` sends `f9`/`f10` =
+   `0xFFFFFFFF` ("no result"). If those last two words are the winning
+   faction/effect reference, filling them with a real faction could flip the tab.
+   Try `RV_VOTE_RESULT=0|1|2` and watch the tab.
+2. **Check where `m_WorldPatronGUID` comes from.** If it is a session parameter
+   (`SetSessionParameters`/`GetGameSettings` in `MatchMakingServiceProtocol`),
+   it is blocked together with conquest/matchmaking (issue 2 above) - the client
+   never receives its matchmaking address.
+3. **Log the gate.** The tab's handle is cached at `this+0x108` right after the
+   name hash `0x551c36f7` is resolved (`Anno5.exe+0x3d66c7`, second site
+   `+0x3d763c`); a loader detour there can print the boolean the frame tests. If
+   it turns out to be a plain flag, forcing it would open the tab - but with no
+   patron data to show, so it would be a hollow win and is labelled a client
+   patch, not an online feature.

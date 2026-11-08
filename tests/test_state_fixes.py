@@ -693,6 +693,28 @@ def test_the_request_prologue(tmp):
     check("the two elections do not share their bars",
           counts != senate_counts, (counts, senate_counts))
 
+    # 2b. the DECLARED-TYPE block (live session 2026-11-08): kind = N type names,
+    #     each a String + u16 flag, and only then the arguments
+    vote_entry = bytes.fromhex("010000000a00566f7465456e747279000100"
+                               "e90300000a000000")         # GetLastVoters(1001, 10)
+    args = R.request_reader(vote_entry)
+    check("a declared-type block is skipped before the arguments",
+          (args.u32(), args.u32()) == (CV.COUNCIL_VOTE_ID, 10),
+          (args.d, args.o))
+    nested = bytes.fromhex("020000001000576f726c644576656e745374617473000100"
+                           "1500576f726c644576656e745374617473456e747279000100")
+    check("two declared types (nested) are skipped too",
+          R.request_reader(nested).remaining() == 0,
+          R.request_reader(nested).remaining())
+    ark = bytes.fromhex("01000000080041726b4974656d000100")   # GetArkItems_V1
+    check("a declared type with no arguments has no arguments",
+          R.request_reader(ark).remaining() == 0)
+
+    # 2c. and the real client's GetLastVoters answer comes from the right slot
+    get_last = body_of(VOTING, "GetLastVoters_V1", store, vote_entry[4:])
+    check("GetLastVoters(1001) answers with VoteEntry rows",
+          int.from_bytes(get_last[:4], "little") >= 1, get_last[:12].hex())
+
     # 3. a no-argument request is a bare prologue: 4 bytes, no arguments
     check("a 4-byte body (prologue only) is a valid no-argument request",
           body_of(PROFILE, "GetInfoMails_V1", store, b"") is not None)

@@ -20,9 +20,35 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $game = $Game
-$stamp = '2026-11-07'
+$stamp = (Get-Date -Format 'yyyy-MM-dd-HHmm')      # never overwrite an older backup
 $backup = Join-Path $game ("_backup-before-update-" + $stamp + ".zip")
 $stage = Join-Path $env:TEMP 'annoupdate'
+
+# ---- 0. stop what would block the update -------------------------------
+# A running server holds server\*.py open and can rewrite state.json while we
+# copy; a running game holds the loader DLL.  Both are stopped/refused here,
+# never mid-save: the server writes atomically, so killing it cannot corrupt
+# the save (the partial file is .tmp, which is discarded).
+$game = $Game.TrimEnd('\')
+$anno = Get-Process -Name Anno5 -ErrorAction SilentlyContinue
+if ($anno) {
+    throw 'Anno 2070 is running - quit it from the game menu (never Task Manager) and run this again.'
+}
+$holders = @()
+foreach ($conn in (Get-NetTCPConnection -LocalPort 8443,3080,3091 -ErrorAction SilentlyContinue |
+                   Where-Object { $_.State -eq 'Listen' })) {
+    $holders += $conn.OwningProcess
+}
+foreach ($procId in ($holders | Sort-Object -Unique)) {
+    $p = Get-Process -Id $procId -ErrorAction SilentlyContinue
+    if ($p -and $p.ProcessName -in @('python','pythonw','py')) {
+        Stop-Process -Id $procId -Force
+        Write-Output ("stopped: the local server (pid " + $procId + ")")
+    } elseif ($p) {
+        throw ("port 8443/3080/3091 is held by " + $p.ProcessName + " (pid " + $procId + "), not by our server - close it and retry")
+    }
+}
+Start-Sleep -Milliseconds 400
 
 # ---- 1. back up everything this update may overwrite ---------------------
 $names = @('PLAY.bat','PROGRESS.bat','SELFTEST.bat','INSTALL.bat','UNINSTALL.bat','config.ini',
