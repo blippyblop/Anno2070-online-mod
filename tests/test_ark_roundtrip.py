@@ -292,13 +292,17 @@ def test_set_ark_items_roundtrip():
     check("SetArkItems [] -> GetArkItems: count 0 and no records",
           got_body == b"\x00\x00\x00\x00", got_body.hex())
 
-    # an EMPTY request body also clears (documented in respond_payload)
+    # a body with NO argument bytes is a no-op, never a wipe (a real clear is
+    # an explicit count 0, tested above)
     R.respond_payload(PROTO, "SetArkItems_V1", store, req(body_in))
-    check("SetArkItems: box refilled before the empty-body case",
+    check("SetArkItems: box refilled before the bodiless case",
           store_items(store) == new, repr(store_items(store)))
     R.respond_payload(PROTO, "SetArkItems_V1", store, req(b""))
-    check("SetArkItems with an empty body: clears the box (documented write)",
-          store_items(store) == [], repr(store_items(store)))
+    check("SetArkItems with no argument bytes: the box is untouched",
+          store_items(store) == new, repr(store_items(store)))
+    R.respond_payload(PROTO, "SetArkItems_V1", store, b"")
+    check("SetArkItems with a completely empty request: still untouched",
+          store_items(store) == new, repr(store_items(store)))
 
     # and the responder path behaves like the seam
     resp = R.RmcResponder(store, lambda *a, **k: None)

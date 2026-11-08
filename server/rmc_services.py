@@ -663,7 +663,21 @@ def h_get_ark_items(store, r, ctx):
 
 
 def h_set_ark_items(store, r, ctx):
+    """``SetArkItems_V1``: the whole ``list<ArkItem>`` -- the box, replaced.
+
+    Two different "nothing" bodies, and they must not be confused:
+
+    * **no argument bytes at all** (a request that carried nothing, whatever the
+      reason) is a *no-op*: never an instruction to delete the player's items;
+    * **count 0** (a real, readable empty list) *is* the clear - that is how the
+      game empties a socket.
+
+    Wiping the box on a bodiless request is exactly the kind of "my ARK items
+    disappeared" report this guards against.
+    """
     p = store.player(_ctx_pid(ctx))
+    if r.remaining() < 4:
+        return _reply(PROFILE, "SetArkItems_V1")
     p["arkItems"] = read_ark_items(r)
     store.save()
     # FIXED (was: an empty FRAME): the reply is an empty PAYLOAD -- the name
@@ -2605,9 +2619,10 @@ def respond_payload(proto, method, store=None, body=b""):
     shorter than 4 bytes is read from offset 0, so a hand-built
     argument-only body still parses.  No reply SHAPE depends on the body, so
     an empty body still produces a complete document -- but the writer methods
-    do read it to decide *what* to write, and an empty body means "write
-    nothing": e.g. ``SetArkItems_V1`` with no body CLEARS the ARK box.  Pass
-    the wire body for any method in :data:`WRITER_METHODS`.
+    do read it to decide *what* to write, and a body with no argument bytes
+    means "write nothing": ``SetArkItems_V1`` with no arguments leaves the box
+    ALONE (an explicit count of 0 is what clears it).  Pass the wire body for
+    any method in :data:`WRITER_METHODS`.
 
     Returns the payload bytes, or ``None`` when this module has no handler for
     ``(proto, method)`` -- and also when the handler itself fails -- so the

@@ -761,8 +761,9 @@ def main():
             check("seam: SetArkItems_V1 with an empty Reader does not crash",
                   w_name == (PROFILE + "::SetArkItems_V1*").encode() + b"\x00",
                   repr(out_w)[:40])
-            check("seam: ... and writes an empty ARK box (documented write)",
-                  w_store.player("default").get("arkItems") == [])
+            check("seam: ... and a bodiless SetArkItems_V1 leaves the box alone",
+                  w_store.player("default").get("arkItems") == [dict(i) for i in starter],
+                  w_store.player("default").get("arkItems"))
 
             # passing the request parameters keeps a writer's write: the
             # client's own SetArkItems_V1 must not wipe the box
@@ -802,6 +803,8 @@ def main():
             # methods that write only when the request carries something: an
             # empty probe body is a valid "nothing to do" and saves nothing
             conditional = {PROFILE + "::SetArk_V1",    # writes only with items
+                           # only a request that actually carries a list writes
+                           PROFILE + "::SetArkItems_V1",
                            # writes only when the request carries rows: the
                            # client's own empty SetStats_V1 is a "no rows",
                            # and treating it as a wipe destroyed the statistics
