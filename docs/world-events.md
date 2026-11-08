@@ -112,7 +112,10 @@ as a month of "worldside progress". That is now simulated exactly as asked:
    achievement table (`patch8.rda:data/config/questconfig/achievements.xml`,
    `CompleteWorldEventNNMissionMM` -> `<Rewards><Item><Reward>GUID`). Of the 15
    reward GUIDs, 8 are profile cosmetics (`ProfileTitle`, `ProfilePortrait`, a
-   decoration building) and can never be an ArkItem; the other 7 are real
+   decoration building) and can never be an ArkItem - those are unlocked by the
+   **achievement** the same mission grants (the client owns the cosmetic and its
+   own unlock state, so the achievement *is* the unlock; there is nothing for the
+   server to hand over). The other 7 are real
    `ConstructionPlanItem` / `BuildingUpgradeGlobal` assets (`7001000-7001004`,
    `7111101-7111103`) and are now granted:
    * into the first free slot **of the item's own quality group** (A/B/C are
