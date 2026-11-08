@@ -681,7 +681,11 @@ def test_hygiene():
                  if not k.startswith("__")
                  and not isinstance(v, (types.FunctionType, types.ModuleType,
                                         str, int, bool, float, tuple,
-                                        frozenset, timedelta))
+                                        frozenset, timedelta,
+                                        # CAMPAIGN_ANCHOR is a date: immutable,
+                                        # and the whole campaign cycle is a pure
+                                        # function of it (no clock at import)
+                                        __import__("datetime").date))
                  and not inspect.isclass(v)]
     eq(leftovers, [], "module namespace holds only constants/callables "
                       "(no mutable module-level store)")

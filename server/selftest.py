@@ -55,7 +55,15 @@ def le32(v):
 
 
 def call(store, proto, method, body=b""):
-    return R.respond_payload(proto, method, store=store, body=body) or b""
+    """One RMC request/response, spoken exactly like the client does.
+
+    ``body`` is the ARGUMENT bytes; the 4-byte request prologue that every
+    client frame carries (``rmc_services._REQUEST_PREFIX``) is added here, so a
+    handler that reads its first argument from offset 4 is exercised the same
+    way the game exercises it.
+    """
+    wire = b"\x00" * R._REQUEST_PREFIX + body
+    return R.respond_payload(proto, method, store=store, body=wire) or b""
 
 
 def fields(raw):
@@ -102,6 +110,21 @@ def main():
               mails)
         print("        chapter %s, mails %s" % (chapter, sorted(mails)))
 
+        campaign = CE.campaign_state()
+        check("the campaign is a month long",
+              campaign["end"] - campaign["start"] == 30, campaign)
+        check("its global target is in the 25,000..125,000 range",
+              25000 <= campaign["target"] <= 125000, campaign["target"])
+        check("the worldside progress is filling over the month",
+              0 < campaign["total"] <= campaign["target"],
+              (campaign["total"], campaign["target"]))
+        check("the state file records the campaign", bool(we.get("campaign")),
+              we.get("campaign"))
+        print("        day %d/30 of campaign %s: %d of %d points, %d/%d tiers"
+              % (campaign["days"], campaign["index"], campaign["total"],
+                 campaign["target"], campaign["tiersReached"],
+                 len(campaign["tiers"])))
+
         print("\n[2] voting")
         call(store, VOTING, "Vote_V1", le32(0) + le32(CV.FACTION_TYCOON))
         call(store, VOTING, "Vote_V1", le32(CV.COUNCIL_VOTE_ID) + le32(CV.FACTION_TECH))
@@ -146,7 +169,20 @@ def main():
               set(u32map(call(store, PROFILE, "GetReputationPoints_V1"))) >= set(CV.FACTIONS),
               career)
 
-        print("\n[5] restart: the save is reopened from disk")
+        print("\n[5] statistics and achievements are stored, not echoed")
+        rows = (store.player("default").get("stats") or [])
+        call(store, PROFILE, "SetStats_V1", b"")        # the client's empty one
+        check("an empty SetStats does not wipe the statistics",
+              (store.player("default").get("stats") or []) == rows, rows)
+        ach = store.player("default").get("achievements") or []
+        check("the achievement carries the id the game sent",
+              bool(ach) and ach[0].get("id") not in (0, None), ach)
+        wire = fields(call(store, PROFILE, "GetAchievements_V1"))
+        served = int.from_bytes(wire[4:8], "little") if len(wire) >= 8 else 0
+        check("... and the client is served that same id", served == ach[0]["id"],
+              (served, ach[0].get("id")))
+
+        print("\n[6] restart: the save is reopened from disk")
         store.save()
         reopened = R.open_store(path)
         check("career survived",

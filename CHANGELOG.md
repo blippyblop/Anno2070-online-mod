@@ -1,6 +1,75 @@
 # Changelog
 
-## Unreleased
+## 0.1.2 - 2026-11-08
+
+Fixed
+- **The 4-byte request prologue (the root cause of most of the 2026-11-08
+  reports).** Every client RMC request body begins with a `u32` class word (0 in
+  every capture) before its arguments; the handlers read from offset 0, so every
+  argument was shifted one word. `Vote_V1`'s `(id, faction)` arrived as
+  `(0, id)`: a senate vote became "faction 0" (so it looked saved), a World
+  Council vote became "faction 1001", failed the enum check and was dropped with
+  no reputation; `GetVoteCount_V1` always read id 0 (both polls shared one set
+  of bars); `AddAchievement_V1` stored id 0; `SetArkItems_V1` read the class
+  word as its list count and cleared the box. `rmc_services.request_reader()`
+  now skips the prologue for both the PRUDP responder and the websocket seam, an
+  unproven non-zero kind is logged once, and every test body speaks the real
+  wire (that mirror is why the suites were green while the bug shipped).
+- **Career points are credited at all now.** With the arguments aligned, a vote
+  pays its faction, a solved mission pays its 50/150/300, and a crossed campaign
+  tier pays every player. `GetReputationPoints_V1` always serves the three
+  factions (never an empty map), `SetReputationPoints_V1` is **merge-max** (a
+  client echo can raise a total but never lower it), and a vote pays **once per
+  election per player** - clicking the bar again cannot farm points.
+- **The world event is a month-long campaign with a simulated world.** A
+  campaign is 30 UTC days anchored to a fixed date; each campaign draws a global
+  target between **25,000 and 125,000** points from a seeded splitmix64 draw and
+  fills it day by day (per-day seeded weights, monotone, exact on the last day,
+  pure function of the date so a restart cannot change it). The wire carries
+  f6 = collected, f7 = target, f4 = the campaign's last day;
+  `worldEvent.campaign` records it in the save. Crossing one of the chapter's
+  four shipped tier thresholds pays that tier's reputation to every player, once
+  per `(campaign, tier)` (`worldEvent.campaignPaid`). `CompleteMission_V1` now
+  replies with the campaign target because the client stores that u32 into the
+  progress-**max** slot (`ddl_region.c:8694`).
+- **Achievements were stored but unrenderable.** `rv_shapes._pair()` only knew
+  the keys `key`/`k`, so a stored `{"id": …}` was served with id 0 - every
+  achievement collapsed into one row. `AddAchievement_V1` is de-duplicated by
+  id and keeps the first stamp (the client re-sends its achievements on every
+  login).
+- **Statistics survived nothing.** The client sends `SetStats_V1` **empty** on
+  every login and we treated that as "delete my statistics"; empty now means "no
+  rows". `UploadStatsReputation_V1`, `UploadFactionRewards_V1`,
+  `UploadReputationMails_V1`, `SolveDailyQuest_V1` and
+  `UploadWorldStatsStencils_V1` used to be blind no-ops that did not even read
+  the body - they now store the decoded rows plus a bounded hex tail, so nothing
+  the client pushes is ever lost.
+- **`AreReputationPointsMissing_V1` polarity is now testable live** with
+  `RV_REPUTATION_PROBE=normal|present|missing|alternate` (logged per call):
+  the one career question that cannot be settled from the captures.
+- Duplicate (byte-identical) `set_visited`/`_split_instance`/
+  `complete_mission`/`completed_missions` definitions removed from
+  `content_events.py` - the later copy silently won.
+
+Docs
+- `docs/career.md` rewritten: the client never calls
+  `GetReputationPoints_V1`, the ladder is client-side (10 levels, cap 6950), and
+  a one-session probe plus a loader detour are the only routes to a moving
+  career page.
+- `docs/world-events.md`: the campaign machinery, the tier payouts, the
+  `CompleteMission` reply slot.
+- `docs/known-issues.md` #10: the Politics tab is disabled **by the client**
+  (loca 21412007, `POLTITCS_TAB`, hash 1427912439) - no server reply can open it,
+  with the exact probe plan to find the flag.
+- `docs/PLAYING.md`: the campaign, and an honest career section.
+
+Tests
+- New regression blocks: the real captured `Vote_V1`/`GetVoteCount_V1` bytes
+  (senate 0 and council 1001), the achievement id round-trip, the empty
+  `SetStats_V1`, the upload capture, merge-max reputation, the campaign month
+  (30 days, target in range, monotone fill, exact landing, tier ladder) and
+  one-payment-per-tier. `SELFTEST.bat` now also proves the campaign and the
+  achievement id.
 
 Fixed
 - **Player name showed as `Player` + boxes.** The Quazal `String` writer omitted
@@ -20,9 +89,13 @@ Fixed
   both slots are restored.
 - **Career points went nowhere.** `Vote_V1` credits `VOTE_REWARD` (50) to
   `players.<pid>.reputation` and mirrors it into `worldEvent.reputation`, so
-  `GetReputationPoints_V1` (which every login reads) returns it and the career
-  page shows it after a restart. `AreReputationPointsMissing_V1` now answers per
-  key instead of "missing" forever.
+  `GetReputationPoints_V1` returns it. (Correction: the client does **not** call
+  `GetReputationPoints_V1` - 0 times in 243 captured logins; it only probes
+  `AreReputationPointsMissing_V1`. Server-side reputation is a backup channel
+  until the client asks, see `docs/career.md`.)
+  `AreReputationPointsMissing_V1` now answers once for the profile instead of
+  per key, so a faction the player has not earned yet no longer reports
+  "the server has nothing".
 - **`SetReputationPoints_V1` silently dropped writes** on a state file that
   stored `reputation` as a list (`IndexError`, swallowed by the reply path, so
   the client believed it saved). Migration now coerces it to a map, and the
@@ -115,7 +188,7 @@ Changed
 - PLAY.bat / PROGRESS.bat: the summary is no longer skipped (`goto :end`), so the
   window stays open and the report is readable.
 
-## Unreleased (uninstaller, same release)
+## 0.1.1 (uninstaller, same release)
 
 Added
 - **Uninstaller.** `UNINSTALL.bat` for the PLAY.bat package and

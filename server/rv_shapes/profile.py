@@ -312,8 +312,15 @@ def _pair(el):
     """Coerce one element to (key, value)."""
     try:
         if isinstance(el, dict):
-            if "key" in el or "value" in el:
-                return el.get("key", el.get("k", 0)), el.get("value", el.get("v", 0))
+            if "key" in el or "value" in el or "id" in el:
+                # "id"/"value" is how achievements and the dossier rows are
+                # stored (``{"id": 1116913, "value": <unix ts>}``).  Without
+                # the "id" arm every achievement was served with key 0, so the
+                # panel showed one row and the rest were unrenderable -- the
+                # data was on disk the whole time.
+                key = el.get("key", el.get("k", el.get("id", el.get("a", 0))))
+                value = el.get("value", el.get("v", el.get("b", 0)))
+                return key, value
             vals = list(el.values())
             if vals:
                 return vals[0], vals[1] if len(vals) > 1 else 0

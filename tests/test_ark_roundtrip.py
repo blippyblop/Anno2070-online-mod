@@ -101,6 +101,18 @@ def ark_body(items):
             + b"".join(struct.pack("<4I", *(int(x) for x in it)) for it in items))
 
 
+#: The client prefixes every RMC request body with a u32 class word (0 in every
+#: captured frame); the arguments follow it.  Requests below add it, replies
+#: never carry it -- so a reply body still compares byte-for-byte with the
+#: argument bytes.
+PROLOGUE = b"\x00\x00\x00\x00"
+
+
+def req(body=b""):
+    """A request body: the prologue plus the argument bytes."""
+    return PROLOGUE + body
+
+
 def store_items(store, pid="default"):
     """The store's ArkItems as a list of 4-tuples (dict or list tolerant)."""
     out = []
@@ -232,7 +244,7 @@ def test_get_encodes_store():
           stateless_body != body and stateless_body == b"\x00\x00\x00\x00",
           "stateless=%r" % (stateless_body,))
     responder = R.RmcResponder(store, lambda *a, **k: None)
-    same = responder.dispatch(PROTO + "::GetArkItems_V1", b"", {"pid": "default"})
+    same = responder.dispatch(PROTO + "::GetArkItems_V1", req(b""), {"pid": "default"})
     check("GetArkItems: seam bytes == RmcResponder.dispatch bytes",
           same == payload, "%r vs %r" % (same and len(same), len(payload)))
 
@@ -246,7 +258,7 @@ def test_set_ark_items_roundtrip():
 
     new = ALT + [(3, 2, 40000088, 1)]          # 6 alt items + one addon id = 7
     body_in = ark_body(new)
-    reply = R.respond_payload(PROTO, "SetArkItems_V1", store, body_in)
+    reply = R.respond_payload(PROTO, "SetArkItems_V1", store, req(body_in))
     plen, name, reply_body = split_payload(reply)
 
     check("SetArkItems: reply is the name block only (void payload)",
@@ -270,7 +282,7 @@ def test_set_ark_items_roundtrip():
 
     # an explicit empty list clears the box
     reply = R.respond_payload(PROTO, "SetArkItems_V1", store,
-                              struct.pack("<I", 0))
+                              req(struct.pack("<I", 0)))
     _p, name, empty_body = split_payload(reply)
     check("SetArkItems []: reply is still the name block",
           name == SET_ITEMS + b"*\x00" and empty_body == b"", repr(name))
@@ -281,16 +293,16 @@ def test_set_ark_items_roundtrip():
           got_body == b"\x00\x00\x00\x00", got_body.hex())
 
     # an EMPTY request body also clears (documented in respond_payload)
-    R.respond_payload(PROTO, "SetArkItems_V1", store, body_in)
+    R.respond_payload(PROTO, "SetArkItems_V1", store, req(body_in))
     check("SetArkItems: box refilled before the empty-body case",
           store_items(store) == new, repr(store_items(store)))
-    R.respond_payload(PROTO, "SetArkItems_V1", store, b"")
+    R.respond_payload(PROTO, "SetArkItems_V1", store, req(b""))
     check("SetArkItems with an empty body: clears the box (documented write)",
           store_items(store) == [], repr(store_items(store)))
 
     # and the responder path behaves like the seam
     resp = R.RmcResponder(store, lambda *a, **k: None)
-    resp.dispatch(PROTO + "::SetArkItems_V1", body_in, {"pid": "default"})
+    resp.dispatch(PROTO + "::SetArkItems_V1", req(body_in), {"pid": "default"})
     check("SetArkItems via RmcResponder: same stored box",
           store_items(store) == new, repr(store_items(store)))
 
@@ -303,7 +315,7 @@ def test_set_ark_delta(xfail_known=False):
     store = R.open_store(None)
     store.player("default")["arkItems"] = [list(t) for t in STARTER]
     delta = [(1, 0, 60136, 1), (3, 2, 60133, 1)]
-    reply = R.respond_payload(PROTO, "SetArk_V1", store, ark_body(delta))
+    reply = R.respond_payload(PROTO, "SetArk_V1", store, req(ark_body(delta)))
     _p, name, reply_body = split_payload(reply)
     check("SetArk_V1: reply is the name block only (void payload)",
           name == SET_ARK + b"*\x00" and reply_body == b"", repr(reply))
@@ -323,7 +335,7 @@ def test_set_ark_delta(xfail_known=False):
     # (b) w3 == 0 means "skip", so the record must not change anything
     store = R.open_store(None)
     store.player("default")["arkItems"] = [list(t) for t in STARTER]
-    R.respond_payload(PROTO, "SetArk_V1", store, ark_body([(2, 1, 0, 0)]))
+    R.respond_payload(PROTO, "SetArk_V1", store, req(ark_body([(2, 1, 0, 0)])))
     got = store_items(store)
     check("SetArk_V1 with w3 == 0: record skipped, box unchanged",
           got == STARTER,
@@ -335,7 +347,7 @@ def test_set_ark_delta(xfail_known=False):
     store = R.open_store(None)
     store.player("default")["arkItems"] = [list(t) for t in STARTER]
     delta = [(2, 1, 0, 0), (1, 0, 60136, 1)]
-    R.respond_payload(PROTO, "SetArk_V1", store, ark_body(delta))
+    R.respond_payload(PROTO, "SetArk_V1", store, req(ark_body(delta)))
     want = apply_delta(STARTER, delta)
     got = store_items(store)
     check("SetArk_V1: w3 == 0 skips, the w3 == 1 record still applies",
@@ -346,14 +358,14 @@ def test_set_ark_delta(xfail_known=False):
     # (d) an empty delta is a no-op (this already matches the code)
     store = R.open_store(None)
     store.player("default")["arkItems"] = [list(t) for t in STARTER]
-    R.respond_payload(PROTO, "SetArk_V1", store, struct.pack("<I", 0))
+    R.respond_payload(PROTO, "SetArk_V1", store, req(struct.pack("<I", 0)))
     check("SetArk_V1 with no records: leaves the box untouched",
           store_items(store) == STARTER, repr(store_items(store)))
 
     # (e) a full-box delta equals a snapshot (the case the client exercises)
     store = R.open_store(None)
     store.player("default")["arkItems"] = []
-    R.respond_payload(PROTO, "SetArk_V1", store, ark_body(ALT))
+    R.respond_payload(PROTO, "SetArk_V1", store, req(ark_body(ALT)))
     check("SetArk_V1 on an empty box: the records become the box",
           store_items(store) == ALT, repr(store_items(store)))
 
@@ -369,7 +381,7 @@ def test_name_blocks():
         "SetArk_V1": ark_body([(1, 0, 60136, 1)]),
     }
     for method, body in bodies.items():
-        payload = R.respond_payload(PROTO, method, store, body)
+        payload = R.respond_payload(PROTO, method, store, req(body))
         expected = ("%s::%s*" % (PROTO, method)).encode()
         plen, name, tail = split_payload(payload)
         check("%s: name block has the trailing '*' and a NUL-terminated name"

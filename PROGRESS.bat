@@ -86,6 +86,15 @@ if defined SPY (
 )
 
 echo.
+echo [ live check: ask the RUNNING server the questions the game asks ]
+if not defined HPORT set "HPORT=8443"
+if defined SPY (
+  "!SPY!" "%~dp0server\probe_rmc.py" !HPORT!
+) else (
+  echo    python not found - cannot probe the server
+)
+
+echo.
 echo ---------------------------------------------------------------------
 if !RV! GEQ 25 (
   echo VERDICT: a full online session - the server answered !RV! calls with

@@ -89,13 +89,16 @@ the folder by hand.
 
 ```
 PLAY.bat              start the server and the game (the working way in)
+PROGRESS.bat          after a session: what was asked, what was saved, and a
+                      LIVE probe of the running server
+SELFTEST.bat          a full fake session in a temp file - no game needed
 INSTALL.bat           one-time: put the loader next to Anno5.exe
 UNINSTALL.bat         undo all of it again (keeps your online state)
 config.ini            player name, game path, ports, options
 packaging/            launcher_app.py, setup_app.py, uninstall_app.py, build-exes.ps1
                       (the exes are built from these)
-server/               the backend: SDK HTTP, notification websocket, RV/RMC (83 methods),
-                      PRUDP framing, conquest HTTP
+server/               the backend: SDK HTTP, notification websocket, RV/RMC (119 methods),
+                      PRUDP framing, conquest HTTP, and probe_rmc.py (live self-check)
 loader/               our own upc_r2 client DLL (C source + prebuilt) - replaces the
                       Ubisoft DLL the game imports
 docs/                 install, playing guide, how it works, known issues, world events

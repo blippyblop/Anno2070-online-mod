@@ -62,6 +62,7 @@ ROOT = os.path.dirname(HERE)
 SERVER = os.path.join(ROOT, "server")
 sys.path.insert(0, SERVER)
 
+import content_events as CE       # noqa: E402
 import rmc_services as R          # noqa: E402
 import prudp_transport as P       # noqa: E402
 import rv_shapes                  # noqa: E402
@@ -404,7 +405,7 @@ REQUEST = {
     VOTING + "::Vote_V1": le32(1) + le32(1),
     VOTING + "::GetVoteCount_V1": le32(1),
     VOTING + "::GetVotingStats_V1": b"\x01",
-    VOTING + "::GetLastVoters_V1": le32(10) + le32(0),
+    VOTING + "::GetLastVoters_V1": le32(0) + le32(10),     # (Vote id, count)
     VOTING + "::UploadVotingTemplate_V1": le32(2) + le32(3),
     VOTING + "::UploadVoteMultipliers_V1": rq_list(
         lambda m: le32(m[0]) + le32(m[1]) + le32(m[2]),
@@ -426,10 +427,17 @@ def name_block(proto, method, star=True):
     return le16(len(nm)) + nm
 
 
+#: The client prefixes every RMC request body with a u32 class word (0 in every
+#: capture we own); the arguments follow it.  Proven in runs/*/server.log: a
+#: no-argument method sends a bare ``00 00 00 00`` and ``GetVoteCount_V1`` sends
+#: ``00 00 00 00 | e9 03 00 00`` (its Vote id at offset 4).
+PROLOGUE = b"\x00\x00\x00\x00"
+
+
 def request_frame(proto, method, params=b"", call_id=1):
     pn = proto.encode("ascii") + b"\x00"
     inner = (le16(len(pn)) + pn + b"\x01" + le32(call_id)
-             + name_block(proto, method, star=False) + params)
+             + name_block(proto, method, star=False) + PROLOGUE + params)
     return le32(len(inner)) + inner
 
 
@@ -651,12 +659,13 @@ def main():
                   sorted(settings) == [(3, 40), (4, 1)], repr(settings))
             ach = decode_body(seam_split(PROFILE, "GetAchievements_V1", rich)[1],
                              ("list", ("seq", "u32", "u64")))
-            check("seam: GetAchievements_V1 carries the store's achievement value",
-                  ach == [(0, 123456789)], repr(ach))
-            # KNOWN ISSUE (rv_shapes, not this seam): _pair() only knows the
-            # keys "key"/"k", so the store's {"id": ...} is written as 0.
-            check("KNOWN-ISSUE: Achievement id is written as 0 (rv_shapes _pair)",
-                  ach and ach[0][0] == 0 and rp["achievements"][0]["id"] == 5,
+            check("seam: GetAchievements_V1 carries id AND stamp",
+                  ach == [(5, 123456789)], repr(ach))
+            # the id used to be written as 0: rv_shapes._pair() only knew the
+            # keys "key"/"k", so a stored {"id": ...} lost its id and every
+            # achievement rendered as the same row (the data was on disk)
+            check("every achievement keeps its own id on the wire",
+                  ach and ach[0][0] == rp["achievements"][0]["id"] == 5,
                   repr(ach))
             prof = decode_body(seam_split(PROFILE, "GetPlayerProfile_V1", rich)[1],
                               LAYOUT[PROFILE + "::GetPlayerProfile_V1"])
@@ -761,7 +770,8 @@ def main():
             rt_store.player("default")["arkItems"] = []
             items_body = struct.pack("<I", len(starter)) + b"".join(
                 struct.pack("<IIII", *t) for t in starter_t)
-            seam(PROFILE, "SetArkItems_V1", rt_store, body=items_body)
+            seam(PROFILE, "SetArkItems_V1", rt_store,
+                 body=PROLOGUE + items_body)
             check("seam: SetArkItems_V1 with a body stores that body",
                   rt_store.player("default")["arkItems"]
                   == [dict(i) for i in starter],
@@ -791,7 +801,11 @@ def main():
                     writes.add(full)
             # methods that write only when the request carries something: an
             # empty probe body is a valid "nothing to do" and saves nothing
-            conditional = {PROFILE + "::SetArk_V1"}   # writes only with items
+            conditional = {PROFILE + "::SetArk_V1",    # writes only with items
+                           # writes only when the request carries rows: the
+                           # client's own empty SetStats_V1 is a "no rows",
+                           # and treating it as a wipe destroyed the statistics
+                           PROFILE + "::SetStats_V1"}
             conditional |= {("ChatServiceProtocol::" + m) for m in (
                 "Subscribe_V1", "Unsubscribe_V1", "SendToChannel_V1",
                 "SendToUser_V1", "SendToGroup_V1", "Ignore_V1", "Unignore_V1")}
@@ -839,8 +853,12 @@ def main():
             # sec:6 min:6 hour:5 day:5 month:4 year:14), so a wrong helper
             # cannot agree with itself.
             def call(proto, method, st, body=b""):
-                """(name-block bytes, field bytes) of one seam reply."""
-                pl = seam(proto, method, st, body=body)
+                """(name-block bytes, field bytes) of one seam reply.
+
+                ``body`` is the ARGUMENT bytes; the request prologue is added
+                here, because that is what the client sends.
+                """
+                pl = seam(proto, method, st, body=PROLOGUE + body)
                 if not isinstance(pl, (bytes, bytearray)) or not pl:
                     return None, None
                 _mlen, raw, rest = parse_name_block(pl)
@@ -911,7 +929,8 @@ def main():
             check("content: the own-vote field (VotingInfo f5) is the faction cast",
                   own_wire == 2, repr(own_wire))
             voters = decode_body(
-                call(VOTING, "GetLastVoters_V1", senate, le32(10) + le32(0))[1],
+                call(VOTING, "GetLastVoters_V1", senate,
+                     le32(0) + le32(10))[1],          # (Vote id, how many)
                 LAYOUT[VOTING + "::GetLastVoters_V1"])
             check("content: GetLastVoters lists that vote first (newest first)",
                   bool(voters) and voters[0][1] == 2, repr(voters[:3]))
@@ -990,8 +1009,13 @@ def main():
 
             raw, body = call(WORLD, "CompleteMission_V1", events,
                              le32(7) + rq_str("Hero_1700000001"))
-            check("content: CompleteMission_V1 replies with the u32 0",
-                  body == le32(0), repr(body))
+            # the reply is stored by the client into its progress-MAX slot
+            # (ddl_region.c:8694), so it is this campaign's target, never 0
+            campaign = CE.campaign_state()
+            check("content: CompleteMission_V1 replies with the campaign target",
+                  body == le32(campaign["target"])
+                  and 25000 <= campaign["target"] <= 125000,
+                  "%r vs target %r" % (body, campaign["target"]))
             call(WORLD, "CompleteMission_V1", events,
                  le32(7) + rq_str("Hero_1700000009"))       # same player + mission
             own = decode_body(

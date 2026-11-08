@@ -58,9 +58,21 @@ def le32(v):
     return (int(v) & 0xFFFFFFFF).to_bytes(4, "little")
 
 
+#: The client prefixes every RMC request body with a u32 class word (0 in every
+#: captured frame); the arguments follow it.  ``payload()`` adds it so these
+#: tests speak the same wire the game does -- reading from offset 0 is what made
+#: a council vote arrive as "faction 1001".
+PROLOGUE = b"\x00" * R._REQUEST_PREFIX
+
+
 def payload(proto, method, store, body=b""):
-    """The payload bytes the server sends for one method."""
-    out = R.respond_payload(proto, method, store=store, body=body)
+    """The payload bytes the server sends for one method.
+
+    ``body`` is the request's ARGUMENT bytes; the request prologue is added
+    here, so a body of ``b""`` is a real no-argument request (4 prologue bytes).
+    """
+    out = R.respond_payload(proto, method, store=store,
+                            body=PROLOGUE + body)
     return out or b""
 
 
@@ -127,12 +139,21 @@ def test_vote_reputation(tmp):
           body_of(PROFILE, "AreReputationPointsMissing_V1", reopened,
                   le32(CV.FACTION_TYCOON))[:1] == b"\x00")
 
-    payload(VOTING, "Vote_V1", reopened, le32(1) + le32(CV.FACTION_TYCOON))
+    # a vote in the OTHER election (the World Council) pays its own +50
+    payload(VOTING, "Vote_V1", reopened,
+            le32(CV.COUNCIL_VOTE_ID) + le32(CV.FACTION_TYCOON))
     again = R.open_store(path)
-    check("a second vote adds up",
+    check("a vote in the other election adds up",
           map_of(body_of(PROFILE, "GetReputationPoints_V1", again))
           == {CV.FACTION_ECO: 0, CV.FACTION_TYCOON: 2 * CV.VOTE_REWARD,
               CV.FACTION_TECH: 0})
+    # repeating the SAME vote must not farm points (or inflate the bars)
+    payload(VOTING, "Vote_V1", again, le32(0) + le32(CV.FACTION_TYCOON))
+    check("repeating a vote pays nothing more",
+          map_of(body_of(PROFILE, "GetReputationPoints_V1", again))
+          == {CV.FACTION_ECO: 0, CV.FACTION_TYCOON: 2 * CV.VOTE_REWARD,
+              CV.FACTION_TECH: 0},
+          map_of(body_of(PROFILE, "GetReputationPoints_V1", again)))
 
 
 def test_legacy_reputation_list(tmp):
@@ -146,7 +167,7 @@ def test_legacy_reputation_list(tmp):
           store.player("default")["reputation"] == {},
           store.player("default")["reputation"])
     out = R.respond_payload(PROFILE, "SetReputationPoints_V1", store=store,
-                            body=le32(1) + le32(50))
+                            body=PROLOGUE + le32(1) + le32(50))
     check("the write does not fail silently", out is not None)
     check("the value is stored",
           R.open_store(path).player("default")["reputation"] == {1: 50})
@@ -182,7 +203,7 @@ def test_mission_payout(tmp):
 
     def solve(guid):
         return R.respond_payload(WORLD, "CompleteMission_V1", store=store,
-                                 body=le32(guid) + b"\x06\x00Player\x00")
+                                 body=PROLOGUE + le32(guid) + b"\x06\x00Player\x00")
 
     check("mission 1 completes", solve(3054014) is not None)
     check("the catalogue pays 1 point / 50 reputation",
@@ -210,7 +231,7 @@ def test_mission_payout(tmp):
     check("a repeat completion does not pay twice",
           (solve_again := R.respond_payload(WORLD, "CompleteMission_V1",
                                             store=reopened,
-                                            body=le32(3054015) + b"\x06\x00Player\x00")) is not None
+                                            body=PROLOGUE + le32(3054015) + b"\x06\x00Player\x00")) is not None
           and reopened.player("default")["reputation"] == {0: 200},
           reopened.player("default")["reputation"])
 
@@ -238,8 +259,10 @@ def test_career_presence(tmp):
     fresh = R.open_store(os.path.join(tmp, "career-empty.json"))
     check("a profile with no reputation still reports missing",
           body_of(PROFILE, "AreReputationPointsMissing_V1", fresh, le32(0))[:1] == b"\x01")
-    check("and serves an empty map",
-          map_of(body_of(PROFILE, "GetReputationPoints_V1", fresh)) == {})
+    check("and serves the three factions at 0 (never an empty map)",
+          map_of(body_of(PROFILE, "GetReputationPoints_V1", fresh))
+          == {0: 0, 1: 0, 2: 0},
+          map_of(body_of(PROFILE, "GetReputationPoints_V1", fresh)))
 
 
 def test_ark_rewards():
@@ -250,7 +273,7 @@ def test_ark_rewards():
 
     def solve(guid):
         return R.respond_payload(WORLD, "CompleteMission_V1", store=store,
-                                 body=le32(guid) + b"\x06\x00Player\x00")
+                                 body=PROLOGUE + le32(guid) + b"\x06\x00Player\x00")
 
     solve(3054107)                       # Sentinel Upgrade 1, quality C
     box = store.player("default")["arkItems"]
@@ -271,7 +294,7 @@ def test_ark_rewards():
     CE.event_for_day(free_a.state.setdefault("worldEvent", {}))
     free_a.player("default")["arkItems"] = []
     R.respond_payload(WORLD, "CompleteMission_V1", store=free_a,
-                      body=le32(3054106) + b"\x06\x00Player\x00")
+                      body=PROLOGUE + le32(3054106) + b"\x06\x00Player\x00")
     check("an empty A0 takes the A reward",
           free_a.player("default")["arkItems"] == [
               {"a": 1, "b": 0, "c": 7001003, "d": 1, "src": "mission"}],
@@ -287,7 +310,7 @@ def test_ark_rewards():
         {"a": 3, "b": 2, "c": 333, "d": 1},          # the player's own
     ]
     R.respond_payload(WORLD, "CompleteMission_V1", store=full,
-                      body=le32(3054107) + b"\x06\x00Player\x00")
+                      body=PROLOGUE + le32(3054107) + b"\x06\x00Player\x00")
     box = full.player("default")["arkItems"]
     check("a full group of the player's items is never overwritten",
           not any(i.get("c") == 7001000 for i in box), box)
@@ -297,7 +320,7 @@ def test_ark_rewards():
     CE.event_for_day(off.state.setdefault("worldEvent", {}))
     off.player("default")["arkItems"] = []
     R.respond_payload(WORLD, "CompleteMission_V1", store=off,
-                      body=le32(3054107) + b"\x06\x00Player\x00")
+                      body=PROLOGUE + le32(3054107) + b"\x06\x00Player\x00")
     os.environ.pop("RV_ARK_REWARDS", None)
     check("RV_ARK_REWARDS=0 disables the grant",
           off.player("default")["arkItems"] == [], off.player("default")["arkItems"])
@@ -385,7 +408,7 @@ def test_mail_count(tmp):
           wire == le32(1) + le32(1) + le32(0), wire)
     mail_id = list(store.player("default")["infoMails"])[0]
     R.respond_payload(PROFILE, "SetInfoMailRead_V1", store=store,
-                      body=le32(mail_id) + b"\x01")
+                      body=PROLOGUE + le32(mail_id) + b"\x01")
     wire = body_of(R.MAIL, "GetMailCount_V1", store)
     check("reading it clears the unread count but not the total",
           wire == le32(1) + le32(0) + le32(0), wire)
@@ -403,7 +426,7 @@ def test_mail_count(tmp):
     check("GetMail_V1 returns the same record",
           int.from_bytes(one[:4], "little") == 1
           and int.from_bytes(one[4 + 8:4 + 12], "little") == int(mail_id), one.hex())
-    R.respond_payload(R.MAIL, "DeleteMail_V1", store=store, body=le32(1))
+    R.respond_payload(R.MAIL, "DeleteMail_V1", store=store, body=PROLOGUE + le32(1))
     check("DeleteMail_V1 removes it", store.player("default")["mailbox"] == [],
           store.player("default")["mailbox"])
 
@@ -419,49 +442,104 @@ def test_stats_capped():
     check("listB capped at 4", len(stats["listB"]) == 4, len(stats["listB"]))
 
 
-def test_day_rotation():
-    print("the world event rotates over the real chapters, one per UTC day")
-    base = datetime(2026, 11, 6, 12, 0, tzinfo=timezone.utc)
-    seen, ids = [], []
-    for i in range(7):
-        when = base + timedelta(days=i)
-        state = {}
-        CE.event_for_day(state, when)
-        first = state["b"]
-        CE.event_for_day(state, when + timedelta(hours=6))      # same day
-        check_once = state["b"] == first
-        if not check_once:
-            failures.append("event changed within day %d" % i)
-        if CE.latest_event(now=when, event=state)["b"] != first:
-            failures.append("latest_event dropped the day's chapter")
-        seen.append(first)
-        ids.append(state["a"])
+def test_campaign_month():
+    """One chapter per month, a random global target, filled day by day."""
+    print("the world event is a month-long campaign with a simulated total")
+    base = datetime(2026, 11, 8, 12, 0, tzinfo=timezone.utc)
+    index = CE.campaign_index(base)
+    start_day, end_day = CE.campaign_bounds(index)
+    chapter = CE.campaign_chapter(index)
     chapters = [c[0] for c in CE.WORLD_EVENT_CHAPTERS]
-    check("every chapter is a real client asset", seen == seen and
-          all(s in chapters for s in seen), seen)
-    check("five different events in five days", len(set(seen[:5])) == 5, seen)
-    check("no two consecutive days share one",
-          all(seen[i] != seen[i + 1] for i in range(len(seen) - 1)), seen)
-    check("the cycle repeats after the catalogue", seen[5] == seen[0], seen)
-    check("the instance id follows the event", ids[0] != ids[1], ids)
-    check("the default catalogue is not the old constant 0", 0 not in seen, seen)
 
-    # a restart mid-day must not re-roll
+    check("one campaign is a month long", end_day - start_day == 30,
+          (start_day, end_day))
+    check("the chapter is a real client asset", chapter in chapters, chapter)
+    check("the campaign starts on a 30-day boundary from the anchor",
+          (start_day - CE.campaign_anchor_day()) % 30 == 0, start_day)
+
+    target = CE.campaign_target(index)
+    check("the global target is in the requested range 25,000..125,000",
+          25000 <= target <= 125000, target)
+    check("the target is stable (same campaign, same number)",
+          CE.campaign_target(index) == target, CE.campaign_target(index))
+    check("a different campaign draws a different number",
+          CE.campaign_target(index + 1) != target,
+          (target, CE.campaign_target(index + 1)))
+
+    # the bar fills over the month: monotone, and exactly on target at the end
+    totals = [CE.campaign_total(index, base + timedelta(days=d))
+              for d in range(30)]
+    check("progress never goes backwards",
+          all(totals[i] <= totals[i + 1] for i in range(len(totals) - 1)),
+          totals[:5])
+    check("the first day already shows progress", totals[0] > 0, totals[0])
+    check("the campaign ends exactly on the target", totals[-1] == target,
+          (totals[-1], target))
+    check("the fill is gradual, not one jump at the end",
+          len(set(totals)) >= 15, len(set(totals)))
+    check("no single day is half the month",
+          all(b - a < target // 2 for a, b in zip(totals, totals[1:])),
+          max(b - a for a, b in zip(totals, totals[1:])))
+
+    # a restart cannot change the number: it is a pure function of the date
+    again = CE.campaign_total(index, base + timedelta(days=17))
+    check("the same date always yields the same total",
+          again == CE.campaign_total(index, base + timedelta(days=17)), again)
+
+    # the tier ladder of the chapter is crossed by the simulated total
+    tiers = CE.campaign_tiers(chapter)
+    check("the chapter has its shipped tier ladder", len(tiers) == 4, tiers)
+    check("tiers reached agree with the total",
+          CE.campaign_tier_reached(chapter, target) ==
+          len([t for t in tiers if target >= t]), tiers)
+
+    # the event document carries the campaign, not the old 0/100 placeholder
     state = {}
     CE.event_for_day(state, base)
-    reloaded = json.loads(json.dumps(state))
-    rolled = CE.event_for_day(reloaded, base + timedelta(hours=6))
-    check("a restart mid-day keeps the same event", not rolled, rolled)
-    # weekly mode holds for 7 days and changes on the 8th
-    weekly = []
-    for i in range(8):
-        state = {}
-        CE.event_for_day(state, base + timedelta(days=i), period_days=7)
-        weekly.append(state["b"])
-    change = next((i for i in range(1, len(weekly)) if weekly[i] != weekly[0]), None)
-    check("period_days=7 holds for several days, then rolls",
-          change is not None and 1 <= change <= 7
-          and len(set(weekly[:change or 0])) == 1, weekly)
+    summary = CE.campaign_sync(state, base)
+    doc = CE.latest_event(now=base, event=state, campaign=summary)
+    check("f7 is the campaign target", doc["g"] == target, doc["g"])
+    check("f6 is the worldside progress so far", doc["f"] == summary["total"],
+          (doc["f"], summary["total"]))
+    check("f6 never exceeds f7", 0 <= doc["f"] <= doc["g"], (doc["f"], doc["g"]))
+    check("the campaign block is written to the state for reporting",
+          state["campaign"]["target"] == target
+          and state["campaign"]["total"] == summary["total"], state["campaign"])
+
+    # a chapter lasts the whole month and changes with the next campaign
+    chapters_seen = []
+    first_day = datetime.fromtimestamp(start_day * 86400, timezone.utc) + \
+        timedelta(hours=12)
+    for day in range(0, 30, 5):
+        st = {}
+        CE.event_for_day(st, first_day + timedelta(days=day))
+        chapters_seen.append(st["b"])
+    check("the same chapter is hosted all month",
+          len(set(chapters_seen)) == 1, chapters_seen)
+
+    next_campaign = {}
+    CE.event_for_day(next_campaign, base + timedelta(days=30))
+    check("the next campaign hosts a different chapter",
+          next_campaign["b"] != chapter, (chapter, next_campaign["b"]))
+
+    # a restart mid-month must not re-roll, and must keep the solved missions
+    state = {}
+    CE.event_for_day(state, base)
+    state["completedMissions"] = [{"a": "Player", "id": 1, "b": "Player_1"}]
+    rolled = CE.event_for_day(json.loads(json.dumps(state)),
+                              base + timedelta(days=10))
+    check("a restart 10 days into the campaign does not re-roll", not rolled,
+          rolled)
+    check("... and the solved missions survive",
+          len(state["completedMissions"]) == 1, state["completedMissions"])
+
+    # daily mode is still available (the pre-campaign behaviour)
+    daily = []
+    for i in range(5):
+        st = {}
+        CE.event_for_day(st, base + timedelta(days=i), period_days=1)
+        daily.append(st["b"])
+    check("period_days=1 still rotates every day", len(set(daily)) == 5, daily)
 
 
 def test_state_file_is_shared(tmp):
@@ -537,6 +615,182 @@ def test_legacy_state_is_adopted(tmp):
           R.open_store(target).player("default")["name"] == "New")
 
 
+
+def test_the_request_prologue(tmp):
+    """The 4-byte request prologue: the bug behind "the vote did not save"."""
+    print("every request carries a 4-byte prologue before its arguments")
+    # 1. the bytes are the ones the client actually sent (runs/*/server.log:
+    #    "VotingServiceProtocol::Vote_V1 call=.. params=12B
+    #     hex=00 00 00 00 e9 03 00 00 02 00 00 00")
+    store = R.open_store(os.path.join(tmp, "prologue.json"))
+    council = b"\x00\x00\x00\x00" + le32(CV.COUNCIL_VOTE_ID) + le32(CV.FACTION_TECH)
+    payload(VOTING, "Vote_V1", store, council[4:])       # payload() adds the prologue
+    infos = store.state["voting"]["infos"]
+    check("a World Council vote lands on the council slot",
+          int(infos["1"]["f6"]) == CV.FACTION_TECH, infos)
+    check("... and not on the senate",
+          int(infos.get("0", {}).get("f6", -1)) == -1, infos)
+    check("... and it pays its reputation to the faction voted for",
+          store.player("default")["reputation"].get(CV.FACTION_TECH) == CV.VOTE_REWARD,
+          store.player("default")["reputation"])
+
+    # a senate vote on the same store goes to slot 0 and pays its own faction
+    payload(VOTING, "Vote_V1", store, le32(0) + le32(CV.FACTION_ECO))
+    infos = R.open_store(os.path.join(tmp, "prologue.json")).state["voting"]["infos"]
+    check("a senate vote lands on the senate slot and survives a restart",
+          int(infos["0"]["f6"]) == CV.FACTION_ECO, infos)
+    check("both votes are in the file, on their own slots",
+          int(infos["0"]["f6"]) == CV.FACTION_ECO
+          and int(infos["1"]["f6"]) == CV.FACTION_TECH, infos)
+    rep = R.open_store(os.path.join(tmp, "prologue.json")).player("default")["reputation"]
+    check("each vote credited its own faction",
+          rep.get(CV.FACTION_ECO) == CV.VOTE_REWARD
+          and rep.get(CV.FACTION_TECH) == CV.VOTE_REWARD, rep)
+
+    # 2. GetVoteCount reads the election id from offset 4, not from 0.  The
+    #    panel is never blank (content_voting seeds filler counts), so the
+    #    assertion is a DELTA against a fresh store, not an absolute.
+    fresh = R.open_store(os.path.join(tmp, "prologue-fresh.json"))
+    base_council = map_of(body_of(VOTING, "GetVoteCount_V1", fresh,
+                                  le32(CV.COUNCIL_VOTE_ID)))
+    base_senate = map_of(body_of(VOTING, "GetVoteCount_V1", fresh, le32(0)))
+    counts = map_of(body_of(VOTING, "GetVoteCount_V1", store, le32(CV.COUNCIL_VOTE_ID)))
+    senate_counts = map_of(body_of(VOTING, "GetVoteCount_V1", store, le32(0)))
+    check("GetVoteCount(1001) moves the COUNCIL bar by one",
+          counts.get(CV.FACTION_TECH, 0) - base_council.get(CV.FACTION_TECH, 0) == 1,
+          (base_council, counts))
+    check("GetVoteCount(0) moves the SENATE bar by one, on its own faction",
+          senate_counts.get(CV.FACTION_ECO, 0) - base_senate.get(CV.FACTION_ECO, 0) == 1,
+          (base_senate, senate_counts))
+    check("the two elections do not share their bars",
+          counts != senate_counts, (counts, senate_counts))
+
+    # 3. a no-argument request is a bare prologue: 4 bytes, no arguments
+    check("a 4-byte body (prologue only) is a valid no-argument request",
+          body_of(PROFILE, "GetInfoMails_V1", store, b"") is not None)
+
+    # 4. AddAchievement: the id is the SECOND word, not the prologue
+    store2 = R.open_store(os.path.join(tmp, "ach.json"))
+    payload(PROFILE, "AddAchievement_V1", store2, le32(1116913) + (7).to_bytes(8, "little"))
+    got = store2.player("default")["achievements"]
+    check("AddAchievement stores the id the client sent", got and got[0]["id"] == 1116913, got)
+    payload(PROFILE, "AddAchievement_V1", store2, le32(1116913) + (9).to_bytes(8, "little"))
+    check("a repeat AddAchievement does not duplicate the achievement",
+          len(store2.player("default")["achievements"]) == 1,
+          store2.player("default")["achievements"])
+    check("... and it keeps the FIRST stamp",
+          store2.player("default")["achievements"][0]["value"] == 7,
+          store2.player("default")["achievements"])
+
+    # 5. the wire carries the id, so the panel can render more than one row
+    raw = body_of(PROFILE, "GetAchievements_V1", store2)
+    first = int.from_bytes(raw[4:8], "little")
+    check("GetAchievements serves the real achievement id (not 0)",
+          first == 1116913, raw[:16].hex())
+    check("the achievement survives a restart",
+          R.open_store(os.path.join(tmp, "ach.json"))
+          .player("default")["achievements"][0]["id"] == 1116913)
+
+
+def test_statistics_persist(tmp):
+    """Statistics: what the client sends is kept, and an empty upload is not a wipe."""
+    print("statistics survive the empty SetStats the client sends every login")
+    path = os.path.join(tmp, "stats.json")
+    store = R.open_store(path)
+    rows = [{"a": 1, "b": 2, "c": 3, "d": 4, "e": 5, "f": 6},
+            {"a": 7, "b": 8, "c": 9, "d": 10, "e": 11, "f": 12}]
+    body = le32(len(rows)) + b"".join(
+        le32(r["a"]) + le32(r["b"]) + le32(r["c"])
+        + r["d"].to_bytes(8, "little") + r["e"].to_bytes(8, "little")
+        + r["f"].to_bytes(8, "little") for r in rows)
+    payload(PROFILE, "SetStats_V1", store, body)
+    check("SetStats stores the rows", store.player("default")["stats"] == rows,
+          store.player("default")["stats"])
+
+    # the client sends SetStats with no arguments on every login
+    payload(PROFILE, "SetStats_V1", store, b"")
+    check("an empty SetStats does not wipe the rows",
+          store.player("default")["stats"] == rows,
+          store.player("default")["stats"])
+    reopened = R.open_store(path)
+    check("the rows survive a restart", reopened.player("default")["stats"] == rows,
+          reopened.player("default")["stats"])
+    raw = body_of(PROFILE, "GetStats_V1", reopened)
+    check("GetStats serves them back", int.from_bytes(raw[:4], "little") == 2,
+          raw[:8].hex())
+
+    # an upload the client may push someday is recorded, never dropped
+    upload = le32(1) + le32(0) + le32(0) + le32(50)
+    payload(PROFILE, "UploadStatsReputation_V1", store, upload)
+    captured = store.player("default").get("statsReputation")
+    check("UploadStatsReputation_V1 is captured, not discarded",
+          bool(captured) and captured[-1]["rows"] == [{"a": 0, "b": 0, "c": 50}],
+          captured)
+    payload(PROFILE, "SolveDailyQuest_V1", store, le32(4025240))
+    check("SolveDailyQuest_V1 is captured too",
+          store.player("default").get("dailyQuests"), store.player("default"))
+
+
+def test_reputation_never_goes_backwards(tmp):
+    """A client echo may raise a total but must never lower it."""
+    print("reputation writes are add-only (a stale client echo cannot delete)")
+    store = R.open_store(os.path.join(tmp, "rep.json"))
+    payload(VOTING, "Vote_V1", store, le32(0) + le32(CV.FACTION_TYCOON))
+    check("the vote paid 50", store.player("default")["reputation"] == {CV.FACTION_TYCOON: 50},
+          store.player("default")["reputation"])
+    payload(PROFILE, "SetReputationPoints_V1", store,
+            le32(CV.FACTION_TYCOON) + le32(0))
+    check("a lower echo is ignored",
+          store.player("default")["reputation"] == {CV.FACTION_TYCOON: 50},
+          store.player("default")["reputation"])
+    payload(PROFILE, "SetReputationPoints_V1", store,
+            le32(CV.FACTION_TYCOON) + le32(120))
+    check("a higher echo is accepted",
+          store.player("default")["reputation"] == {CV.FACTION_TYCOON: 120},
+          store.player("default")["reputation"])
+
+
+def test_campaign_payout(tmp):
+    """Crossing a campaign tier pays every player once, and only once."""
+    print("a campaign tier pays its reputation once per campaign")
+    store = R.open_store(os.path.join(tmp, "campaign.json"))
+    summary = CE.campaign_state()
+    chapter = summary["chapter"]
+    tiers = CE.campaign_tiers(chapter)
+    we = store.state.setdefault("worldEvent", {})
+    CE.event_for_day(we)
+    store.player("default")["name"] = "Player"
+
+    # pretend the world has already crossed two tiers
+    reached = CE.campaign_state()
+    fake = {"index": summary["index"], "chapter": chapter,
+            "tiersReached": 2, "target": summary["target"], "total": tiers[1]}
+    R._pay_campaign_tiers(store, we, fake)
+    rep = store.player("default")["reputation"]
+    check("two crossed tiers paid +50 and +100",
+          sum(rep.values()) == 150, rep)
+    R._pay_campaign_tiers(store, we, fake)
+    check("paying the same tiers twice adds nothing",
+          sum(store.player("default")["reputation"].values()) == 150,
+          store.player("default")["reputation"])
+    check("the crossed tiers are recorded in the save",
+          we["campaignPaid"][str(summary["index"])] == [1, 2], we["campaignPaid"])
+
+    # a third tier pays only its own reward
+    fake3 = dict(fake, tiersReached=3)
+    R._pay_campaign_tiers(store, we, fake3)
+    check("a newly crossed tier pays only itself",
+          sum(store.player("default")["reputation"].values()) == 300,
+          store.player("default")["reputation"])
+
+    # the live document carries the campaign, and the reply of CompleteMission
+    doc = CE.latest_event(now=None, event=we,
+                          campaign=CE.campaign_state())
+    check("the served bar is the campaign (f6 <= f7, both non-zero)",
+          0 < doc["f"] <= doc["g"], (doc["f"], doc["g"]))
+    check("f7 is the campaign target the reply also carries",
+          doc["g"] == summary["target"], (doc["g"], summary["target"]))
+
 def main():
     tmp = tempfile.mkdtemp(prefix="anno-statefix-")
     try:
@@ -552,7 +806,11 @@ def main():
         test_mixed_key_save(tmp)
         test_mail_count(tmp)
         test_stats_capped()
-        test_day_rotation()
+        test_campaign_month()
+        test_the_request_prologue(tmp)
+        test_statistics_persist(tmp)
+        test_reputation_never_goes_backwards(tmp)
+        test_campaign_payout(tmp)
         test_state_file_is_shared(tmp)
         test_json_file_is_the_save(tmp)
         test_legacy_state_is_adopted(tmp)

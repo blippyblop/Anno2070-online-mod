@@ -119,6 +119,48 @@ def u32_at(data, off):
     return int.from_bytes(raw.ljust(4, b"\x00"), "little")
 
 
+#: Every client RMC **request body** begins with this many bytes of what the
+#: engine calls the request *kind* (a u32 class word, ``0`` in every capture we
+#: own).  The arguments follow it.  Reading from offset 0 shifts every argument
+#: by one word: ``Vote_V1``'s ``(id, faction)`` arrives as ``(0, id)``, so a
+#: council vote (id 1001) was read as faction 1001, ``GetVoteCount_V1`` always
+#: saw id 0, and ``SetArkItems_V1`` read the class word as its list count and
+#: cleared the box.  Proof in the captured logs: no-argument methods send a bare
+#: ``00 00 00 00`` (93x), ``GetVoteCount_V1`` sends ``00 00 00 00 | e9 03 00 00``
+#: (id 1001 at offset 4), and ``UpdateUPCActivations_V1`` sends
+#: ``00 00 00 00 | 0a 00 "127.0.0.1\0"`` -- a Quazal String can only start at 4.
+_REQUEST_PREFIX = 4
+
+#: Request kinds already warned about (see :func:`request_reader`).
+_SEEN_REQUEST_KINDS = set()
+
+
+def request_reader(body=b""):
+    """A :class:`Reader` over one request body, positioned after the prologue.
+
+    Use this for *wire* bodies (what the client actually sent).  A body shorter
+    than the prologue is read from 0, so a hand-built argument-only body still
+    parses instead of silently reading nothing.
+    """
+    try:
+        data = bytes(body or b"")
+    except Exception:                                # pragma: no cover
+        data = b""
+    if len(data) >= _REQUEST_PREFIX:
+        kind = int.from_bytes(data[:_REQUEST_PREFIX], "little")
+        if kind and kind not in _SEEN_REQUEST_KINDS:
+            # every capture we own has 0 here.  A non-zero kind means the
+            # arguments are preceded by a name-tagged type block we have never
+            # decoded, so the fields below may be misaligned: say so once, with
+            # the bytes, instead of silently reading garbage.
+            _SEEN_REQUEST_KINDS.add(kind)
+            if LOG is not None:
+                LOG("WARNING request prologue kind=%d (unproven layout) hex=%s"
+                    % (kind, data[:64].hex()))
+        return Reader(data, _REQUEST_PREFIX)
+    return Reader(data)
+
+
 class Reader:
     """Bounded cursor over a request body (LITTLE-endian, never raises).
 
@@ -183,6 +225,12 @@ class Reader:
 
     def remaining(self):
         return max(0, len(self.d) - self.o)
+
+    def rest(self):
+        """Every byte from the cursor to the end (never raises)."""
+        raw = self.d[self.o:]
+        self.o = len(self.d)
+        return raw
 
     # -- containers ------------------------------------------------------
     def count(self, limit=MAX_RECORDS):
@@ -685,12 +733,26 @@ def h_get_achievements(store, r, ctx):
 
 
 def h_add_achievement(store, r, ctx):
+    """``AddAchievement_V1``: u32 achievement id, u64 stamp -> u64 stamp.
+
+    De-duplicated by id: the client re-sends the achievements it already owns
+    on every login, so appending blindly grew the list forever (and, with the
+    request prologue ignored, every one of them was id 0).  The FIRST stamp is
+    kept - it is the moment the player earned it, which is what the dossier
+    shows.
+    """
     p = store.player(_ctx_pid(ctx))
     ach_id = r.u32() if r.remaining() >= 4 else 0
     value = r.u64() if r.remaining() >= 8 else int(time.time())
     if not value:
         value = int(time.time())
-    p.setdefault("achievements", []).append({"id": ach_id, "value": value})
+    achievements = p.get("achievements")
+    if not isinstance(achievements, list):
+        achievements = p["achievements"] = []
+    for rec in achievements:
+        if isinstance(rec, dict) and _as_int(rec.get("id"), -1) == ach_id:
+            return _reply(PROFILE, "AddAchievement_V1", value=_as_int(rec.get("value"), value))
+    achievements.append({"id": ach_id, "value": value})
     store.save()
     return _reply(PROFILE, "AddAchievement_V1", value=value)
 
@@ -1154,9 +1216,19 @@ def h_get_stats(store, r, ctx):
 
 
 def h_set_stats(store, r, ctx):
+    """``SetStats_V1``: ``list<StatsEntry>`` (36 B each) -> void.
+
+    An EMPTY request is "no rows", not "delete my statistics": the client sends
+    exactly that on every login, and treating it as a wipe was destroying the
+    stored rows each session (the "statistics are not persistent" report).
+    """
     p = store.player(_ctx_pid(ctx))
-    p["stats"] = read_stats_entries(r)
-    store.save()
+    if r.remaining() < 4:
+        return _reply(PROFILE, "SetStats_V1")
+    rows = read_stats_entries(r)
+    if rows or r.remaining() >= 4:
+        p["stats"] = rows
+        store.save()
     return _reply(PROFILE, "SetStats_V1")
 
 
@@ -1170,6 +1242,45 @@ def h_get_world_stats(store, r, ctx):
 
 # ---- reputation ----------------------------------------------------------
 
+#: Diagnostic knob for the ONE unproven thing on the career path: whether
+#: ``AreReputationPointsMissing_V1`` asks "do you have points for me?" (answer 0
+#: when we do) or "is my copy stale?" (answer 1 so the client re-asks).  We have
+#: never observed the client follow up with either
+#: ``GetReputationPoints_V1`` or ``SetReputationPoints_V1``, so the polarity
+#: cannot be settled from the captures.  ``RV_REPUTATION_PROBE`` lets one live
+#: session try the other answers without a rebuild:
+#:
+#:   unset / "normal"  -- answer from the profile (the shipped behaviour)
+#:   "present"         -- always 0 ("the server has your points")
+#:   "missing"         -- always 1 ("ask me again")
+#:   "alternate"       -- the opposite of the truth, ONCE per process
+#:
+#: If a ``GetReputationPoints_V1``/``SetReputationPoints_V1`` follows the
+#: alternate answer, the probe is the trigger and the answer becomes "missing=1
+#: whenever our map is non-empty and the client has not asked yet".
+_REPUTATION_PROBE_STATE = []
+
+
+def _reputation_probe(asked, missing):
+    """The override for :func:`h_are_rep_missing` (see the knob's docstring)."""
+    mode = (os.environ.get("RV_REPUTATION_PROBE") or "").strip().lower()
+    if mode in ("", "normal", "0", "off"):
+        return None
+    if mode in ("present", "have", "0-answer"):
+        return 0
+    if mode in ("missing", "1-answer"):
+        return 1
+    if mode == "alternate":
+        if _REPUTATION_PROBE_STATE:
+            return None
+        _REPUTATION_PROBE_STATE.append(True)
+        if LOG is not None:
+            LOG("reputation: PROBE alternate answer for asked=%r (was %d) -> %d"
+                % (asked, missing, 0 if missing else 1))
+        return 0 if missing else 1
+    return None
+
+
 def h_get_reputation_points(store, r, ctx):
     """``map<u32,u32>`` faction id -> reputation points (the career page).
 
@@ -1181,11 +1292,11 @@ def h_get_reputation_points(store, r, ctx):
     """
     p = store.player(_ctx_pid(ctx))
     rep = _int_keyed(p.get("reputation", {}))
-    if not rep:
-        return _reply(PROFILE, "GetReputationPoints_V1", pairs={})
-    pairs = {faction: int(rep.get(faction, 0))
+    pairs = {faction: max(0, _as_int(rep.get(faction), 0))
              for faction in content_voting.FACTIONS}
     pairs.update({k: v for k, v in rep.items() if k not in pairs})
+    if LOG is not None:
+        LOG("reputation: GetReputationPoints -> %r" % (pairs,))
     return _reply(PROFILE, "GetReputationPoints_V1", pairs=pairs)
 
 
@@ -1197,14 +1308,19 @@ def h_are_rep_missing(store, r, ctx):
     its locally-earned points instead of asking for the server's.
     """
     p = store.player(_ctx_pid(ctx))
-    if r.remaining() >= 4:
-        r.u32()                       # the faction being asked about
+    asked = r.u32() if r.remaining() >= 4 else None
     rep = _int_keyed(p.get("reputation", {}))
     # "missing" is a property of the PROFILE, not of one faction: answering
     # per key told the client "the server has nothing" for every faction the
     # player had not earned yet, so it kept its own local zero and the career
-    # page showed nothing even though the vote had been credited
+    # page showed nothing even though the vote had been credited.
     missing = 0 if rep else 1
+    probe = _reputation_probe(asked, missing)
+    if probe is not None:
+        missing = probe
+    if LOG is not None:
+        LOG("reputation: AreMissing asked=%r have=%r -> %d%s"
+            % (asked, rep, missing, " (probe override)" if probe is not None else ""))
     return _reply(PROFILE, "AreReputationPointsMissing_V1", missing=missing)
 
 
@@ -1221,6 +1337,16 @@ def h_set_reputation_points(store, r, ctx):
     rep = p.get("reputation")
     if not isinstance(rep, dict):
         rep = p["reputation"] = {}
+    existing = _int_keyed(rep)
+    old_value = _as_int(existing.get(key), 0)
+    if value < old_value:
+        # a client echo may RAISE a total but never lower it: the client keeps
+        # its own local copy and re-pushes it on login, so an overwrite would
+        # delete points the server had already paid out
+        if LOG is not None:
+            LOG("reputation: SetReputationPoints key=%d ignored lower value %d < %d"
+                % (key, value, old_value))
+        return _reply(PROFILE, "SetReputationPoints_V1")
     rep[key] = value
     store.save()
     if LOG is not None:
@@ -1334,6 +1460,65 @@ def h_upload_leaderboard_templates(store, r, ctx):
     return _reply(PROFILE, "UploadLeaderboardTemplates_V1")
 
 
+# ---- upload capture ------------------------------------------------------
+
+#: Bounded so a chatty client cannot grow the save file without limit.
+MAX_UPLOADS = 20
+MAX_UPLOAD_BYTES = 256
+
+
+def _capture_upload(bucket, proto, method, rows=None):
+    """Handler factory: record what the client uploads instead of dropping it.
+
+    These methods (``UploadStatsReputation_V1``, ``UploadFactionRewards_V1``,
+    ``UploadReputationMails_V1``, ``SolveDailyQuest_V1``,
+    ``UploadWorldStatsStencils_V1``) have a VOID reply, so their request body is
+    the only copy of the data that exists anywhere.  Sending it to ``_void_player``
+    threw it away *and* logged nothing, which is why "are statistics/reputation
+    persisted?" could not be answered from the captures.
+
+    Two things are recorded: the decoded rows when the body parses as the
+    documented ``u32 count + fixed-size rows`` shape, and a bounded hex tail
+    with the byte count -- enough to decode the real layout from a live session
+    without another round of guesswork.  The reply stays void, so a wrong
+    guess here can never break the client.
+    """
+    def handler(store, r, ctx):
+        p = store.player(_ctx_pid(ctx))
+        body = r.rest()
+        record = {"ts": int(time.time()), "bytes": len(body)}
+        if rows is not None and len(body) >= 4:
+            try:
+                record["rows"] = rows(Reader(body))
+            except Exception:                     # noqa: BLE001
+                record["rows"] = []
+        record["raw"] = body[:MAX_UPLOAD_BYTES].hex()
+        log = p.get(bucket)
+        if not isinstance(log, list):
+            log = p[bucket] = []
+        log.append(record)
+        del log[:-MAX_UPLOADS]
+        store.save()
+        if LOG is not None:
+            LOG("upload %s: %d bytes %s" % (method, len(body), record["raw"][:64]))
+        return _reply(proto, method)
+    handler.__name__ = "h_capture_" + re.sub(r"[^a-z0-9]+", "_", method.lower())
+    return handler
+
+
+def _stats_reputation_rows(r):
+    """``list<StatsReputation>``: 12 B each (three u32), per
+    ``__AV_DDL_StatsReputation_rdv__.c`` (+8/+0xc/+0x10) and the 0xc stride of
+    ``CPlayerProfileServiceImpl::UploadStatsReputation``."""
+    n = min(r.count(), r.remaining() // 12)
+    return [{"a": r.u32(), "b": r.u32(), "c": r.u32()} for _ in range(n)]
+
+
+def _u32_rows(r):
+    """``list<u32>`` -- the shape ``SolveDailyQuest_V1``/``FactionRewards`` use."""
+    return r.u32_list()
+
+
 # ---- void uploaders ------------------------------------------------------
 
 def _void_player(proto, method):
@@ -1398,15 +1583,31 @@ def h_vote(store, r, ctx):
         # a stale client document that sends an id we do not serve must not put
         # the vote where no panel will ever read it
         election_id = _election_id(store)
+    pid = _ctx_pid(ctx)
+    # One reward per (election, player): the panel can be clicked again, and a
+    # repeated Vote_V1 used to add another count and another +50 career points
+    # every time.  The bookkeeping lives in the voting state so it survives a
+    # restart with the rest of the election.
+    rewarded = voting.get("rewarded")
+    if not isinstance(rewarded, dict):
+        rewarded = voting["rewarded"] = {}
+    ticket = "%d:%s" % (election_id, pid)
+    previous = rewarded.get(ticket)
+    if previous == faction:
+        store.save()
+        return _reply(VOTING, "Vote_V1")     # same vote again: nothing changed
     try:
-        content_voting.apply_vote(voting, election_id, faction,
-                                  voter=_ctx_pid(ctx))
+        content_voting.apply_vote(voting, election_id, faction, voter=pid)
     except (TypeError, ValueError):
         # a faction outside the proven enum (0/1/2) is a client bug: never
         # corrupt the bars, never fail the call, just record no vote
         pass
     else:
-        _credit_vote(store, faction, ctx)
+        rewarded[ticket] = faction
+        if previous is None:
+            # first vote in this election: pay once, but never for a change of
+            # mind (a second faction in the same election must not double-pay)
+            _credit_vote(store, faction, ctx)
     store.save()
     # Vote_V1's reply has NO body at all (the client skips parsing)
     return _reply(VOTING, "Vote_V1")
@@ -1424,11 +1625,8 @@ def _credit_vote(store, faction, ctx):
     if faction not in content_voting.FACTIONS:
         return
     pid = _ctx_pid(ctx)
-    p = store.player(pid)
-    rep = p.get("reputation")
-    if not isinstance(rep, dict):
-        rep = p["reputation"] = {}
-    rep[int(faction)] = int(rep.get(int(faction), 0)) + content_voting.VOTE_REWARD
+    _add_reputation(store, pid, content_voting.VOTE_REWARD,
+                    reason="vote", faction=faction)
     we = _world_event_state(store)
     wer = we.get("reputation")
     if not isinstance(wer, dict):
@@ -1437,6 +1635,37 @@ def _credit_vote(store, faction, ctx):
         wer[pid] = int(wer.get(pid, 0) or 0) + content_voting.VOTE_REWARD
     except (TypeError, ValueError):
         wer[pid] = content_voting.VOTE_REWARD
+
+
+def _add_reputation(store, pid, points, reason="reward", faction=None):
+    """Add career reputation to ``players.<pid>.reputation`` (never overwrite).
+
+    ``faction`` picks the key explicitly (a vote knows which faction paid); with
+    ``None`` the points land on the first key the player already has, or key 0
+    the first time they ever earn anything.  Add-only is the rule everywhere:
+    two sources paying the same map must never wipe each other, and a client
+    echo must never lower a total (see ``h_set_reputation_points``).
+
+    Returns the new total for that key (0 when nothing was written).
+    """
+    points = _as_int(points, 0)
+    if not points:
+        return 0
+    p = store.player(pid)
+    rep = p.get("reputation")
+    if not isinstance(rep, dict):
+        rep = p["reputation"] = {}
+    normalised = _int_keyed(rep)
+    if faction in content_voting.FACTIONS:
+        key = int(faction)
+    else:
+        key = min(normalised) if normalised else 0
+    normalised[key] = _as_int(normalised.get(key), 0) + points
+    p["reputation"] = normalised
+    if LOG is not None:
+        LOG(f"career: +{points} reputation ({reason}) -> faction {key} "
+            f"= {normalised[key]} for {pid}")
+    return normalised[key]
 
 
 def _credit_mission(store, pid, record):
@@ -1458,13 +1687,7 @@ def _credit_mission(store, pid, record):
     record["points"], record["rep"] = points, rep_points
 
     p = store.player(pid)
-    rep = p.get("reputation")
-    if not isinstance(rep, dict):
-        rep = p["reputation"] = {}
-    normalised = _int_keyed(rep)
-    key = min(normalised) if normalised else 0
-    normalised[key] = _as_int(normalised.get(key), 0) + rep_points
-    p["reputation"] = normalised
+    _add_reputation(store, pid, rep_points, reason="mission %s" % record.get("id"))
 
     we = _world_event_state(store)
     wer = we.get("reputation")
@@ -1659,23 +1882,23 @@ def h_get_voting_stats(store, r, ctx):
 
 
 def h_get_last_voters(store, r, ctx):
-    """``list<VoteEntry>``: String voter, u32 faction, u32 per entry.
+    """``GetLastVoters_V1``: u32 election id, u32 limit -> ``list<VoteEntry>``.
 
-    The body is ``u32 limit, u32 offset`` in every frame we have captured; a
-    three-u32 body (id, limit, offset) is also accepted and selects the
-    election.  Recorded votes come back newest first, and the content module
-    fills the list from the counts when nobody has voted yet so the panel is
-    not blank.
+    ``list<VoteEntry>`` entries are ``String voter, u32 faction, u32 per``.
+    The two request words are proven from the sender in
+    ``decomp/ddl_ser.c:3190,3203`` (``u32,u32``) and from the live captures
+    (the frame always re-issues the pair right after ``Vote_V1``): *id* first,
+    then the number of voters the panel wants.  Recorded votes come back
+    newest first, and the content module fills the list from the counts when
+    nobody has voted yet so the panel is not blank.
     """
     raw_id = None
-    if r.remaining() >= 12:
+    limit = 10
+    if r.remaining() >= 8:
         raw_id = r.u32()
         limit = r.u32()
-        r.u32()                                   # offset (not needed)
-    else:
-        limit = r.u32() if r.remaining() >= 4 else 10
-        if r.remaining() >= 4:
-            r.u32()                               # offset (not needed)
+    elif r.remaining() >= 4:
+        raw_id = r.u32()
     limit = min(max(0, limit), 64)
     slot = _election_id(store) if raw_id is None else _voting_slot_for(store, raw_id)
     voters = content_voting.last_voters(store.state, slot, limit)
@@ -1722,6 +1945,75 @@ def _world_event_state(store):
     return we
 
 
+def _campaign_players(store, we=None, ctx=None):
+    """Every player the campaign pays out to (registered, stored, session)."""
+    pids = []
+    we = we if isinstance(we, dict) else _world_event_state(store)
+    for name in (we.get("registered") or ()):
+        if isinstance(name, str) and name and name not in pids:
+            pids.append(name)
+    players = store.state.get("players")
+    if isinstance(players, dict):
+        for name in players:
+            name = str(name)
+            if name and name not in pids:
+                pids.append(name)
+    if ctx is not None:
+        pid = _ctx_pid(ctx)
+        if pid and pid not in pids:
+            pids.append(pid)
+    return pids
+
+
+def _pay_campaign_tiers(store, we, summary, ctx=None):
+    """Pay the reputation of every campaign tier the world has just crossed.
+
+    The ladder is the chapter's own shipped one (25k/50k/75k/100k for chapter 1,
+    25k/75k/150k/300k for the DLC chapters) and each tier pays
+    ``CAMPAIGN_TIER_REWARDS`` to *every* player the campaign knows about - it is
+    a world event, so the whole world reached the threshold together.
+
+    Idempotent per ``(campaign index, tier)``: the crossed tiers are recorded in
+    ``worldEvent.campaignPaid`` before the money is handed out, so a restart, a
+    second login or a re-request cannot pay twice.
+    """
+    reached = _as_int(summary.get("tiersReached"), 0)
+    if reached <= 0:
+        return []
+    paid = we.get("campaignPaid")
+    if not isinstance(paid, dict):
+        paid = we["campaignPaid"] = {}
+    key = str(_as_int(summary.get("index"), 0))
+    done = paid.get(key)
+    if not isinstance(done, list):
+        done = paid[key] = []
+    done_ints = {_as_int(x, -1) for x in done}
+    fresh = [tier for tier in range(1, reached + 1) if tier not in done_ints]
+    if not fresh:
+        return []
+    rewards = content_events.CAMPAIGN_TIER_REWARDS
+    pids = _campaign_players(store, we, ctx)
+    for tier in fresh:
+        reward = _as_int(rewards[min(tier, len(rewards)) - 1], 0)
+        for pid in pids:
+            _add_reputation(store, pid, reward,
+                            reason="campaign tier %d" % tier)
+        done.append(int(tier))                 # record BEFORE paying out
+    if LOG is not None:
+        LOG("campaign %s: tiers %r crossed, %d reputation each to %r"
+            % (key, fresh, rewards[0] if rewards else 0, pids))
+    store.save()
+    return fresh
+
+
+def _campaign(store, now=None, ctx=None):
+    """Refresh the campaign block, pay crossed tiers, return the summary."""
+    we = _world_event_state(store)
+    summary = content_events.campaign_sync(we, now)
+    _pay_campaign_tiers(store, we, summary, ctx)
+    return summary
+
+
 def _we_owner(record):
     """Session player that completed a mission, or ``""``.
 
@@ -1747,8 +2039,11 @@ def h_get_latest_world_event(store, r, ctx):
     we = _world_event_state(store)
     if content_events.event_for_day(we):
         _send_event_mail(store, we.get("b"))
-        store.save()
-    event = content_events.latest_event(event=we)
+    # the campaign owns f6/f7/f4: a month of simulated worldside progress and
+    # the tier payouts that come with crossing its ladder
+    summary = _campaign(store, ctx=ctx)
+    store.save()
+    event = content_events.latest_event(event=we, campaign=summary)
     return _reply(WORLD, "GetLatestWorldEvent_V1", event=event)
 
 
@@ -1781,12 +2076,16 @@ def h_we_complete_mission(store, r, ctx):
     mission = r.u32() if r.remaining() >= 4 else 0
     instance = r.string() if r.remaining() else ""
     before = len(we.get("completedMissions") or ())
-    result = content_events.complete_mission(we, mission, instance)
+    content_events.complete_mission(we, mission, instance)
     records = we.get("completedMissions")
     if (isinstance(records, list) and len(records) > before
             and isinstance(records[-1], dict)):
         records[-1]["pid"] = _ctx_pid(ctx)
         _credit_mission(store, _ctx_pid(ctx), records[-1])
+    # The reply lands in the client's progress-MAX slot (ddl_region.c:8694:
+    # ``*(impl + 0x58) = reply``), so it must be THIS campaign's target and not
+    # 0 -- a 0 there makes the bar divide by zero right after solving a mission.
+    result = max(1, _as_int(_campaign(store, ctx=ctx).get("target"), 1))
     store.save()
     return _reply(WORLD, "CompleteMission_V1", result=result)
 
@@ -1951,17 +2250,23 @@ METHODS = {
     PROFILE + "::GetStatus_V1": h_get_status,
     PROFILE + "::GetWorldStats_V1": h_get_world_stats,
     PROFILE + "::ResetInfoMails_V1": h_reset_info_mails,
-    PROFILE + "::UploadWorldStatsStencils_V1": _void_player(PROFILE, "UploadWorldStatsStencils_V1"),
+    PROFILE + "::UploadWorldStatsStencils_V1": _capture_upload(
+        "worldStatsUploads", PROFILE, "UploadWorldStatsStencils_V1", None),
     PROFILE + "::GetReputationPoints_V1": h_get_reputation_points,
     PROFILE + "::AreReputationPointsMissing_V1": h_are_rep_missing,
     PROFILE + "::SetReputationPoints_V1": h_set_reputation_points,
-    PROFILE + "::SolveDailyQuest_V1": _void_player(PROFILE, "SolveDailyQuest_V1"),
-    PROFILE + "::UploadFactionRewards_V1": _void_player(PROFILE, "UploadFactionRewards_V1"),
-    PROFILE + "::UploadStatsReputation_V1": _void_player(PROFILE, "UploadStatsReputation_V1"),
+    PROFILE + "::SolveDailyQuest_V1": _capture_upload(
+        "dailyQuests", PROFILE, "SolveDailyQuest_V1", _u32_rows),
+    PROFILE + "::UploadFactionRewards_V1": _capture_upload(
+        "factionRewards", PROFILE, "UploadFactionRewards_V1", _stats_reputation_rows),
+    PROFILE + "::UploadStatsReputation_V1": _capture_upload(
+        "statsReputation", PROFILE, "UploadStatsReputation_V1",
+        _stats_reputation_rows),
     PROFILE + "::GetFacebookAccount_V1": h_get_facebook_account,
     PROFILE + "::SetFacebookAccount_V1": h_set_facebook_account,
     PROFILE + "::InvalidateAllReputationPoints_V1": h_invalidate_reputation,
-    PROFILE + "::UploadReputationMails_V1": _void_player(PROFILE, "UploadReputationMails_V1"),
+    PROFILE + "::UploadReputationMails_V1": _capture_upload(
+        "reputationMails", PROFILE, "UploadReputationMails_V1", _u32_rows),
     PROFILE + "::ActivateUniqueKey_V1": h_activate_unique_key,
     PROFILE + "::InitializeService_V1": h_initialize_service,
     PROFILE + "::AddShopItem_V1": h_add_shop_item,
@@ -2123,6 +2428,12 @@ _WRITER_SHORT_NAMES = frozenset((
     "AddInfoMail_V1", "SetInfoMailRead_V1", "ResetInfoMails_V1",
     # stats / reputation / account / shop / leaderboards / activations
     "SetStats_V1", "SetReputationPoints_V1",
+    # upload capture: these store what the client pushes (they used to discard
+    # the body, which is why "are statistics/achievements persisted?" was
+    # unanswerable from a capture)
+    "UploadStatsReputation_V1", "UploadFactionRewards_V1",
+    "UploadReputationMails_V1", "SolveDailyQuest_V1",
+    "UploadWorldStatsStencils_V1",
     "InvalidateAllReputationPoints_V1",
     "SetFacebookAccount_V1", "ActivateUniqueKey_V1", "AddActivation_V1",
     "AddShopItem_V1", "RemoveShopItem_V1", "UploadLeaderboardTemplates_V1",
@@ -2242,12 +2553,14 @@ def respond_payload(proto, method, store=None, body=b""):
     accepted too and normalised.
     ``store``  a :class:`Store`, any object with ``.state`` (+ optional
     ``.player()``/``.save()``), or ``None`` for the in-memory default store.
-    ``body``   the request's parameter bytes, when the caller has them
-    (default: empty).  No reply SHAPE depends on them, so an empty body still
-    produces a complete document -- but the writer methods do read them to
-    decide *what* to write, and an empty body means "write nothing": e.g.
-    ``SetArkItems_V1`` with no body CLEARS the ARK box.  Pass the parameters
-    for any method in :data:`WRITER_METHODS`.
+    ``body``   the request's **wire** body -- i.e. what the client sent,
+    including the 4-byte request prologue (:data:`_REQUEST_PREFIX`).  A body
+    shorter than 4 bytes is read from offset 0, so a hand-built
+    argument-only body still parses.  No reply SHAPE depends on the body, so
+    an empty body still produces a complete document -- but the writer methods
+    do read it to decide *what* to write, and an empty body means "write
+    nothing": e.g. ``SetArkItems_V1`` with no body CLEARS the ARK box.  Pass
+    the wire body for any method in :data:`WRITER_METHODS`.
 
     Returns the payload bytes, or ``None`` when this module has no handler for
     ``(proto, method)`` -- and also when the handler itself fails -- so the
@@ -2279,7 +2592,7 @@ def respond_payload(proto, method, store=None, body=b""):
         if handler is None:
             return None
         try:
-            request = Reader(bytes(body or b""))
+            request = request_reader(body)
         except Exception:                            # noqa: BLE001
             request = Reader(b"")
         payload = handler(_coerce_store(store), request, {"pid": "default"})
@@ -2463,7 +2776,7 @@ class RmcResponder:
             proto, method = name.split("::", 1)
         except ValueError:                           # pragma: no cover
             proto, method = "", name
-        request = Reader(body)
+        request = request_reader(body)
         try:
             payload = handler(self.store, request, ctx if ctx is not None
                               else {"pid": "default"})

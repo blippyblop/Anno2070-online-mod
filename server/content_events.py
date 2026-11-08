@@ -110,13 +110,46 @@ WORLD_EVENT_CHAPTERS = (
     (3062000, (3062001, 3062002, 3062003), "The Secret of the Ebashi Trench"),
 )
 
-#: Which chapter the event of the day uses, and how long a chapter lasts.
-#: ``1`` = a different event every UTC day; ``7`` = a new chapter every week
-#: (a 3-mission story chain with its own mails is a multi-day arc, so weekly is
-#: the more faithful cadence).  ``0`` pins ``MISSION_SET_INDEX`` (the old
-#: behaviour) for a controlled A/B run.
-WORLD_EVENT_PERIOD_DAYS = 1
+#: How long one chapter is hosted, in UTC days.  The real service rotates a
+#: chapter per *campaign*, which the panels describe as a month: the "worldside
+#: progress" bar fills a little every day and the chapter's tier ladder
+#: (25k / 50k / 75k / 100k) is crossed over the same period.  ``30`` = one
+#: chapter per month; ``1`` restores the old "a new chapter every day"
+#: behaviour, ``0`` pins ``MISSION_SET_INDEX`` (the pre-rotation behaviour) for a
+#: controlled A/B run.
+CAMPAIGN_DAYS = 30
+WORLD_EVENT_PERIOD_DAYS = CAMPAIGN_DAYS
 DAY_SECONDS = 86400
+
+#: The day the campaign cycle is anchored to.  A *fixed* date (not "today") is
+#: what makes the whole simulation reproducible: campaign ``n`` always starts on
+#: ``CAMPAIGN_ANCHOR + n * CAMPAIGN_DAYS``, so the same calendar date yields the
+#: same chapter, the same global target and the same progress after any number
+#: of restarts, on any machine.
+CAMPAIGN_ANCHOR = _date(2026, 1, 1)
+
+#: How many points the *world* collects over one campaign.  The user-facing
+#: requirement is "random, from a range of 25,000 to 125,000" and it is honoured
+#: exactly: :func:`campaign_target` maps a seeded splitmix64 draw onto this
+#: inclusive range, so the number is arbitrary-looking yet identical for every
+#: player and every request within that campaign.
+CAMPAIGN_TARGET_MIN = 25000
+CAMPAIGN_TARGET_MAX = 125000
+
+#: The campaign tier ladder, from ``assets.xml`` (``-MetaGame/Campaign``): four
+#: thresholds per chapter with one reputation reward each.  Chapter 1 ships
+#: 25k/50k/75k/100k with +50/+100/+150/+200; the four DLC chapters ship
+#: 25k/75k/150k/300k.  The reward column is only decoded for chapter 1, so the
+#: same +50/+100/+150/+200 ladder is used for all five (``GUESS:`` the DLC
+#: chapters may pay differently - no captured level-up payload exists for them).
+CAMPAIGN_TIER_REWARDS = (50, 100, 150, 200)
+CAMPAIGN_TIERS = (
+    (3054018, (25000, 50000, 75000, 100000)),
+    (3054105, (25000, 75000, 150000, 300000)),
+    (3058000, (25000, 75000, 150000, 300000)),
+    (3060000, (25000, 75000, 150000, 300000)),
+    (3062000, (25000, 75000, 150000, 300000)),
+)
 
 #: Per-mission reward table, from the shipped ``assets.xml``
 #: (``-MetaGame/Missions/WorldEvent/...``).  Mission 1 of a chapter is worth
@@ -537,17 +570,183 @@ def day_ordinal(now=None):
     return int(_now_datetime(now).timestamp()) // DAY_SECONDS
 
 
+_MASK64 = (1 << 64) - 1
+_SPLITMIX_GOLDEN = 0x9E3779B97F4A7C15
+_SPLITMIX_MUL1 = 0xBF58476D1CE4E5B9
+_SPLITMIX_MUL2 = 0x94D049BB133111EB
+
+#: Salt so the campaign draws are independent of anything else that might hash
+#: the same index later (nobody else hashes 64-bit numbers today, but a stable
+#: salt is free insurance).
+_CAMPAIGN_SALT = 0x5EED_2070_0000_0001
+
+
+def splitmix64(value):
+    """One splitmix64 draw -- a pure, well-mixed 64-bit hash of ``value``.
+
+    Used instead of :mod:`random` on purpose: the campaign must be identical for
+    every player, every request and every restart *without storing anything*,
+    and a seeded PRNG object would have to be persisted (and would drift the
+    moment anything else consumed a number from it).
+    """
+    z = (int(value) + _SPLITMIX_GOLDEN) & _MASK64
+    z = ((z ^ (z >> 30)) * _SPLITMIX_MUL1) & _MASK64
+    z = ((z ^ (z >> 27)) * _SPLITMIX_MUL2) & _MASK64
+    return (z ^ (z >> 31)) & _MASK64
+
+
+def campaign_anchor_day():
+    """UTC day ordinal of :data:`CAMPAIGN_ANCHOR`."""
+    return day_ordinal(CAMPAIGN_ANCHOR)
+
+
+def campaign_index(now=None):
+    """Which campaign ``now`` falls in (0 = the campaign that started 2026-01-01).
+
+    Negative before the anchor, which is fine: the whole simulation is defined
+    for every integer, so a machine with a skewed clock still gets a coherent
+    (just earlier) campaign instead of an exception.
+    """
+    return (day_ordinal(now) - campaign_anchor_day()) // CAMPAIGN_DAYS
+
+
+def campaign_bounds(index):
+    """``(start_day, end_day)`` of campaign ``index``; ``end_day`` is exclusive.
+
+    Both are UTC day ordinals, so day ``start_day`` is the first day of the
+    campaign and ``end_day - 1`` its last.
+    """
+    start = campaign_anchor_day() + int(index) * CAMPAIGN_DAYS
+    return start, start + CAMPAIGN_DAYS
+
+
+def campaign_chapter(index, chapters=None):
+    """The chapter GUID hosted by campaign ``index`` (the five rotate)."""
+    chapters = chapters or WORLD_EVENT_CHAPTERS
+    return int(chapters[int(index) % len(chapters)][0])
+
+
+def campaign_target(index):
+    """The global points total this campaign will collect, 25,000 .. 125,000.
+
+    Deterministic in ``index``: a seeded draw mapped onto the inclusive range,
+    so the number looks arbitrary but is the same everywhere, always.
+    """
+    span = CAMPAIGN_TARGET_MAX - CAMPAIGN_TARGET_MIN + 1
+    seed = splitmix64(_CAMPAIGN_SALT ^ (int(index) * _SPLITMIX_GOLDEN))
+    return CAMPAIGN_TARGET_MIN + seed % span
+
+
+def campaign_weights(index):
+    """One weight per campaign day (1..1000), pure in ``index``.
+
+    The *shape* of the month: a day with a big weight collects a bigger slice of
+    the target, so the bar rises by uneven steps (a quiet Monday, a busy
+    weekend) instead of on a ruler-straight line.  Summing them and taking
+    prefixes is what makes per-day progress monotone *and* exact.
+    """
+    base = splitmix64(_CAMPAIGN_SALT ^ 0xA5A5 ^ (int(index) * 31))
+    return tuple(1 + splitmix64(base + day) % 1000 for day in range(CAMPAIGN_DAYS))
+
+
+def campaign_total(index, now=None, weights=None):
+    """Points the world has collected so far in campaign ``index``.
+
+    Day 1 of the campaign already shows one day's worth (the world does not
+    start at zero on a live campaign), the last day reaches the target exactly,
+    and the sequence never goes backwards.  Because it is a pure function of
+    ``(index, day)``, a restart cannot change it: no accumulator, no drift.
+    """
+    weights = weights or campaign_weights(index)
+    start, _end = campaign_bounds(index)
+    elapsed = day_ordinal(now) - start + 1
+    if elapsed <= 0:
+        return 0
+    elapsed = min(int(elapsed), CAMPAIGN_DAYS)
+    collected = sum(weights[:elapsed])
+    return campaign_target(index) * collected // max(1, sum(weights))
+
+
+def campaign_tiers(chapter):
+    """The campaign tier thresholds of a chapter (from ``assets.xml``)."""
+    wanted = _int(chapter, -1)
+    for guid, tiers in CAMPAIGN_TIERS:
+        if int(guid) == wanted:
+            return tuple(int(t) for t in tiers)
+    return ()
+
+
+def campaign_tier_reached(chapter, total):
+    """How many of the chapter's tiers ``total`` has already crossed (0..4)."""
+    count = 0
+    for threshold in campaign_tiers(chapter):
+        if _int(total, 0) >= threshold:
+            count += 1
+    return count
+
+
+def campaign_state(now=None, chapters=None):
+    """Everything the campaign needs, as a JSON-safe dict (no side effects).
+
+    Keys: ``index``/``start``/``end`` (day ordinals), ``chapter``, ``target``,
+    ``total``, ``days`` (1..30 = which day of the campaign it is), ``tiers``
+    (the chapter's thresholds), ``tiersReached`` and ``tierRewards`` (the
+    reputation each crossed tier pays).
+    """
+    index = campaign_index(now)
+    start, end = campaign_bounds(index)
+    chapter = campaign_chapter(index, chapters)
+    target = campaign_target(index)
+    total = campaign_total(index, now)
+    days = min(max(1, day_ordinal(now) - start + 1), CAMPAIGN_DAYS)
+    tiers = campaign_tiers(chapter)
+    reached = campaign_tier_reached(chapter, total)
+    return {
+        "index": int(index),
+        "start": int(start),
+        "end": int(end),
+        "chapter": int(chapter),
+        "target": int(target),
+        "total": int(total),
+        "days": int(days),
+        "tiers": list(tiers),
+        "tiersReached": int(reached),
+        "tierRewards": [int(r) for r in CAMPAIGN_TIER_REWARDS[:reached]],
+    }
+
+
+def campaign_sync(state, now=None, chapters=None):
+    """Refresh ``state["campaign"]`` and return the same summary.
+
+    The numbers are *computed*, not accumulated: this only makes them visible in
+    the save file (``state_report.py`` prints them, and a player can see the
+    month's shape without a log).  Reading them back is not what drives the
+    wire -- a corrupt or hand-edited block therefore cannot move the bar.
+    """
+    summary = campaign_state(now, chapters)
+    if isinstance(state, dict):
+        block = state.get("campaign")
+        if not isinstance(block, dict):
+            block = state["campaign"] = {}
+        block.clear()
+        block.update(summary)
+    return summary
+
+
 def event_for_day(state, now=None, chapters=None, period_days=None):
     """Point ``state`` (a store's ``worldEvent`` dict) at today's chapter.
 
-    Returns ``True`` when the event rolled.  The rule is deterministic: the
-    chapter is ``chapters[(utc_day // period_days) % len(chapters)]``, so every
-    calendar day has exactly one event, it is the same for every player and
-    every request within that day, and it changes tomorrow.  No RNG, so a
-    restart mid-day cannot change it and the state file only needs the day key.
+    Returns ``True`` when the event rolled.  The rule is deterministic: with the
+    shipped :data:`WORLD_EVENT_PERIOD_DAYS` (30) the chapter is the one the
+    month-long **campaign** hosts, so a chapter stays up for a month and the
+    same campaign is served to every player and every request in it; any other
+    period uses ``chapters[(utc_day // period_days) % len(chapters)]`` (1 = a
+    new chapter every day, useful for testing).  No RNG is involved in the
+    *choice*, so a restart cannot change it and the state file only needs the
+    day key.
 
-    ``period_days`` 1 = daily (default), 7 = weekly, 0 = pinned
-    (``MISSION_SET_INDEX``, the pre-rotation behaviour).
+    ``period_days`` 30 = the campaign month (default), 1 = daily, 7 = weekly,
+    0 = pinned (``MISSION_SET_INDEX``, the pre-rotation behaviour).
     """
     if not isinstance(state, dict):
         return False
@@ -559,31 +758,45 @@ def event_for_day(state, now=None, chapters=None, period_days=None):
     except (TypeError, ValueError):
         period_days = 1
     day = day_ordinal(now)
+    started = day
     if period_days <= 0:
         chapter, instance = int(MISSION_SET_INDEX), int(EVENT_INSTANCE_ID)
         slot = 0
+    elif period_days == CAMPAIGN_DAYS:
+        # the shipped cadence: a chapter per campaign, anchored so the cycle is
+        # reproducible instead of drifting with the UTC epoch
+        slot = (day - campaign_anchor_day()) // CAMPAIGN_DAYS % len(chapters)
+        chapter = int(chapters[slot][0])
+        instance = int(EVENT_INSTANCE_ID) + slot
+        started = campaign_bounds(campaign_index(now))[0]
     else:
         slot = (day // period_days) % len(chapters)
         chapter = int(chapters[slot][0])
         instance = int(EVENT_INSTANCE_ID) + slot
+        started = slot * period_days if period_days > 0 else day
     current = state.get("b")
-    if (state.get("day") == day and isinstance(current, int)
-            and current == chapter):
+    same_chapter = isinstance(current, int) and current == chapter
+    if state.get("day") == day and same_chapter:
         return False                      # same day, same event: nothing to do
     previous = current
     state["day"] = day
     state["b"] = chapter
     state["a"] = instance
-    state["since"] = day * DAY_SECONDS
-    state["visited"] = False
+    if not same_chapter:
+        # a NEW chapter: its own window starts now and the player has not seen
+        # it.  A mere day change inside a month-long campaign must not reset
+        # "visited" or the window, or the intro mail and the header date would
+        # restart every midnight.
+        state["since"] = started * DAY_SECONDS
+        state["visited"] = False
     if previous is not None and previous != chapter:
         # yesterday's mission completions belong to the previous chapter: the
         # client greys out anything it cannot resolve against the new one
         state["completedMissions"] = []
-    return True
+    return not same_chapter
 
 
-def latest_event(now=None, event=None):
+def latest_event(now=None, event=None, campaign=None):
     """Build the ``GetLatestWorldEvent_V1`` document (a plain dict).
 
     Drop-in for ``rmc_services._world_event(store)`` and for
@@ -604,6 +817,12 @@ def latest_event(now=None, event=None):
                  "event is up") is accepted as the *inverse* of ``running``,
                  so an existing store keeps its meaning after wiring.
                  Unknown keys are ignored and junk never raises.
+    ``campaign`` -- optional :func:`campaign_state` summary.  When given, the
+                 bar becomes the **global** one (f6 = points the world has
+                 collected so far, f7 = this campaign's target) and f4 becomes
+                 the campaign's last day, which is exactly what the panels
+                 describe as "worldside progress".  Omitted (the stateless
+                 default the shape module builds) -> the old 0/100 placeholder.
 
     The returned dict is always JSON-serialisable (ints/bools/str only), so it
     can be persisted as-is.
@@ -661,6 +880,23 @@ def latest_event(now=None, event=None):
                                                    doc["windowStart"])
         doc["windowEnd"] = _packed_or_packed_now(event.get("windowEnd"),
                                                  doc["windowEnd"])
+
+    if isinstance(campaign, Mapping):
+        # The campaign owns the bar: a month of simulated worldside progress out
+        # of the target drawn for this campaign.  f7 must never be 0 (the client
+        # divides by it), so an empty/unknown campaign keeps the default.
+        total = _int(campaign.get("total"), 0)
+        target = _int(campaign.get("target"), 0)
+        if target > 0:
+            doc["f"] = max(0, min(total, target))
+            doc["g"] = target
+        end_day = _int(campaign.get("end"), 0)
+        if end_day > 0:
+            # f4 is a packed Date: the campaign's last day, 23:59:59 UTC
+            doc["start"] = packed_date(datetime.fromtimestamp(
+                end_day * DAY_SECONDS - 1, timezone.utc))
+            doc["windowEnd"] = doc["start"]
+        doc["campaign"] = True
     return doc
 
 
@@ -813,102 +1049,4 @@ def event_stats(state):
         "c1": len(missions),
         "c2": len(registered) if isinstance(registered, list) else 0,
     }
-
-def set_visited(state, visited=True):
-    """Record the "seen it" flag on the store dict (``SetVisited_V1``).
-
-    ``state`` is the plain ``worldEvent`` dict (``store.state["worldEvent"]``);
-    ``latest_event(event=state)`` then reports it as f8.  Returns the flag.
-    """
-    if not isinstance(state, dict):
-        return bool(visited)
-    state["visited"] = bool(visited)
-    return state["visited"]
-
-
-# --------------------------------------------------------------------------
-# missions
-# --------------------------------------------------------------------------
-
-def _split_instance(player_name):
-    """``"<PlayerName>_<unixtime>"`` -> ``(player, instance_name)``.
-
-    The client's ``CompleteMission`` request string is built as
-    ``"<PlayerName>_<unixseconds>"`` (SS7.2, ``we_ui.c`` case 0xca).  The
-    player identity is the part before that numeric suffix, which is what we
-    de-duplicate on; a name without such a suffix is used unchanged as both.
-    """
-    text = _text(player_name, "")
-    if "_" in text:
-        head, _, tail = text.rpartition("_")
-        if head and tail.isdigit() and len(tail) >= 9:
-            return head, text
-    return text, text
-
-
-def complete_mission(state, mission_id, player_name, now=None):
-    """Record one mission completion; return the ``CompleteMission_V1`` u32.
-
-    ``state``       plain dict (``store.state["worldEvent"]``).  A non-dict is
-                    tolerated and simply records nothing.
-    ``mission_id``  the mission index the client sent (first request u32; it is
-                    an index into the event's local mission list, not a GUID).
-    ``player_name`` the request String, ``"<PlayerName>_<unixtime>"``.
-    ``now``         completion timestamp (default: now, UTC); stored for the
-                    stats/list ordering only, never sent as a packed Date.
-
-    Idempotent **per (mission, player)**: a repeat call (same player, same
-    mission, different instance string/timestamp) does not append a second
-    record.  The client's own pending map keys by mission index, so a duplicate
-    would only ever be noise.  Returns :data:`COMPLETE_MISSION_REPLY` (0), the
-    value the client stores unvalidated.
-    """
-    try:
-        when = _as_utc_datetime(now)
-    except (TypeError, ValueError):
-        when = datetime.now(timezone.utc)
-    mission = _int(mission_id, 0)
-    player, instance = _split_instance(player_name)
-
-    if not isinstance(state, dict):
-        return COMPLETE_MISSION_REPLY
-    records = state.get("completedMissions")
-    if not isinstance(records, list):
-        records = state["completedMissions"] = []
-    for rec in records:
-        if isinstance(rec, Mapping) and _int(rec.get("id"), -1) == mission \
-                and _text(rec.get("a"), "") == player:
-            return COMPLETE_MISSION_REPLY
-    records.append({
-        "a": player,                       # rv_shapes: display name
-        "id": mission,                     # rv_shapes: mission index
-        "b": instance,                     # rv_shapes: "<player>_<unixtime>"
-        "ts": int(when.timestamp()),       # bookkeeping only (never on the wire)
-        # what solving this mission is worth, straight from the shipped assets
-        "points": mission_info(mission)["points"],
-        "rep": mission_info(mission)["reputation"],
-    })
-    return COMPLETE_MISSION_REPLY
-
-
-def completed_missions(state, player=None):
-    """The ``list<WorldEventCompletedMission>`` records from ``state``.
-
-    Entries are ``{"a": player, "id": mission, "b": instance}`` -- the three
-    keys ``rv_shapes.voting.completed_mission()`` writes in wire order
-    (String, u32, String).  ``player`` narrows to one player (that is the
-    difference between ``GetOwn...`` and ``GetLast...``).
-    """
-    records = state.get("completedMissions") if isinstance(state, dict) else None
-    out = []
-    for rec in records if isinstance(records, list) else ():
-        if not isinstance(rec, Mapping):
-            continue
-        name = _text(rec.get("a"), "")
-        if player is not None and name != _text(player, ""):
-            continue
-        out.append({"a": name,
-                    "id": _int(rec.get("id"), 0),
-                    "b": _text(rec.get("b"), "")})
-    return out
 

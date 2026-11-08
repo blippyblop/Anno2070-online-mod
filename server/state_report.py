@@ -103,10 +103,24 @@ def event_lines(state):
     when = "?"
     if isinstance(day, int) and day > 0:
         when = time.strftime("%Y-%m-%d", time.gmtime(day * 86400))
-    return ["    event of the day : %s" % title,
-            "    day key          : %s (UTC)" % when,
-            "    missions solved  : %d %s" % (len(solved),
+    lines = ["    event chapter    : %s" % title,
+             "    day key          : %s (UTC)" % when,
+             "    missions solved  : %d %s" % (len(solved),
                                               "(%s)" % ", ".join(map(str, solved)) if solved else "")]
+    campaign = we.get("campaign")
+    if isinstance(campaign, dict):
+        total = int(campaign.get("total") or 0)
+        target = int(campaign.get("target") or 1)
+        percent = (100 * total // target) if target else 0
+        tiers = campaign.get("tiers") if isinstance(campaign.get("tiers"), list) else []
+        reached = int(campaign.get("tiersReached") or 0)
+        lines.append("    worldside progress: %d of %d points  (%d%%, day %s of 30)"
+                     % (total, target, percent, campaign.get("days", "?")))
+        if tiers:
+            lines.append("    campaign tiers   : %d of %d crossed %s"
+                         % (reached, len(tiers),
+                            "(%s)" % ", ".join("%d" % int(t) for t in tiers)))
+    return lines
 
 
 def summary(state):
@@ -137,12 +151,14 @@ def summary(state):
         "achievements": len(player.get("achievements") or []),
         "votes": mine,
         "missions": len(we.get("completedMissions") or []),
+        "world": int(((we.get("campaign") or {}).get("total")) or 0)
+        if isinstance(we.get("campaign"), dict) else 0,
     }
 
 
 LABELS = {"career": "career points", "ark": "ARK items", "mails": "mails",
           "achievements": "achievements", "votes": "own votes",
-          "missions": "missions solved"}
+          "missions": "missions solved", "world": "worldside progress"}
 
 
 def main(argv):

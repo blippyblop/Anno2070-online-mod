@@ -1818,17 +1818,71 @@ class _ExclusiveHTTPServer(ThreadingHTTPServer):
             ThreadingHTTPServer.server_bind(self)
 
 
-def http_serve(port):
+def http_bind(port):
+    """Bind the HTTP port NOW (synchronously) and return the server, or None.
+
+    Binding in :func:`main` instead of inside a thread is what makes "the port
+    is taken" a refusal to start rather than a server that looks alive while the
+    game talks to somebody else - two local servers overwrite each other's saved
+    state, which is exactly the "my vote disappeared" report.
+    """
     try:
         srv = _ExclusiveHTTPServer(("127.0.0.1", port), Handler)
     except OSError as exc:
         log(f"HTTP  REFUSED port {port}: {exc} - another local server already "
             f"owns it. Close that window (or kill that PID) and start again; "
             f"two servers would overwrite each other's saved state.")
-        return
+        return None
     srv.daemon_threads = True
     log(f"HTTP  listening on 127.0.0.1:{port} (plain http + ws-upgrade)")
-    srv.serve_forever()
+    return srv
+
+
+def http_serve(port_or_server):
+    """Serve HTTP forever, on an already-bound server or on ``port``."""
+    if hasattr(port_or_server, "serve_forever"):
+        port_or_server.serve_forever()
+        return
+    srv = http_bind(port_or_server)
+    if srv is not None:
+        srv.serve_forever()
+
+
+_STATE_LOCK = None
+
+
+def lock_state_file(path):
+    """Hold an exclusive lock next to the save file (one server per save).
+
+    The HTTP port already stops a second server, but only when it is started
+    with the same port. A stray ``python mimic_server.py --http 8444`` pointed
+    at the same ``state.json`` would still overwrite the player's progress, so
+    the save file itself is locked. Failure to lock is a refusal to start.
+    """
+    global _STATE_LOCK
+    lock_path = str(path) + ".lock"
+    try:
+        fh = open(lock_path, "a+b")
+    except OSError as exc:
+        log(f"STATE could not create the lock file {lock_path}: {exc} - "
+            f"continuing without it")
+        return True
+    try:
+        fh.seek(0)
+        if os.name == "nt":                     # pragma: no cover - Windows
+            import msvcrt
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        try:
+            fh.close()
+        except OSError:
+            pass
+        return False
+    _STATE_LOCK = fh
+    return True
 
 
 def ws_serve(port):
@@ -2498,8 +2552,18 @@ def main():
         log(f"config: could not apply the player name to the profile: {_e!r}")
     log(f"RMC store: {ARGS.data_file} ({len(rmc_services.METHODS)} methods)")
     sys.stderr = sys.stdout
+    _http_server = http_bind(ARGS.http)
+    if _http_server is None:
+        log("REFUSING to start: the HTTP port is owned by another process. "
+            "Nothing was started and your saved progress was not touched.")
+        raise SystemExit(2)
+    if not lock_state_file(ARGS.data_file):
+        log("REFUSING to start: another server is already using "
+            f"{ARGS.data_file}. Nothing was started and your saved progress "
+            "was not touched.")
+        raise SystemExit(2)
     threads = [
-        threading.Thread(target=http_serve, args=(ARGS.http,), daemon=True),
+        threading.Thread(target=http_serve, args=(_http_server,), daemon=True),
     ]
     if not ARGS.no_ws and ARGS.ws:
         threads.append(threading.Thread(target=ws_serve, args=(ARGS.ws,), daemon=True))

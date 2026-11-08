@@ -112,3 +112,35 @@ The package contains a small DLL that is copied next to a game executable, which
 is the same shape as a loader an attacker would use, and it is unsigned. Windows
 may warn or quarantine it. Build the loader yourself from
 `loader/src/upc_stub.c` (`loader/build.ps1`) if you prefer a binary you made.
+
+## 10. "Connection to the World Council or Senate not possible at this time"
+
+**Symptom:** the Ark's **Politics** tab cannot be opened; hovering it shows that
+sentence.
+
+**Cause (proven, client-side):** that sentence is loca id **21412007**
+(`eng1.rda:data/loca/eng/txt/tt_disabled.txt:263`), and it is the
+**disabled-state tooltip** of the Ark's `POLTITCS_TAB` window
+(`Game.cdf` offset `0xc999c`, window hash `1427912439`). The tab is greyed out
+by the client's own enable condition before any request is made, so **no server
+payload can change it** - the senate and World Council *frames* are alive (they
+poll `GetVoteCount_V1`/`GetLastVoters_V1` and accept votes), it is only this tab
+that is unreachable.
+
+**What the server already does:** both elections are served with their real
+documents, a vote is recorded per election and pays 50 career reputation once
+per election, and the counts/voter lists come back per election id
+(`0` = senate, `1001` = World Council).
+
+**How to identify the enabling flag** (needs a live session, so it waits for the
+host to come back):
+
+1. serve clearly distinct counts per slot (already the case - 0 and 1001 no
+   longer share bars) and confirm the tab state does not change,
+2. run one launch with the local server **off** (baseline) and compare the tab's
+   state; if it is disabled there too, the condition is not "server reachable",
+3. hook `0x1403d66c7` / `0x1403d763c` (the window's enable/update path) and log
+   the flag being tested, then serve the value it wants.
+
+Until then the honest statement is: the Politics tab is a client-side gate we
+cannot open from the server, and everything behind it already works.
