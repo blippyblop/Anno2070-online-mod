@@ -409,19 +409,45 @@ class Store:
         self.path = path
         self.lock = threading.Lock()
         self.state = json.loads(json.dumps(DEFAULT_STATE))  # deep copy
+        #: True when the live file was unreadable and the backup was used
+        self.recovered = False
         self.load()
 
     def load(self):
-        if self.path and os.path.exists(self.path):
+        """Read the save, falling back to ``.bak`` when the live file is bad.
+
+        A single unreadable ``state.json`` (a half-written file from a dead
+        disk, a hand edit, a crashing editor) used to reset the state to the
+        defaults - and the next save then *overwrote* the player's progress with
+        an empty document.  The backup is the previous successful save, so it is
+        strictly better than an empty slate; say loudly that it happened.
+        """
+        for candidate, is_backup in ((self.path, False),
+                                     ((self.path or "") + ".bak", True)):
+            if not candidate or not os.path.exists(candidate):
+                continue
             try:
-                with open(self.path, "r", encoding="utf-8") as f:
+                with open(candidate, "r", encoding="utf-8") as f:
                     disk = json.load(f)
-                if isinstance(disk, dict):
-                    for k, v in disk.items():
-                        self.state[k] = v
-                print(f"[store] loaded {self.path}")
+                if not isinstance(disk, dict):
+                    raise ValueError("the save is not a JSON object")
             except Exception as e:                    # noqa: BLE001
-                print(f"[store] load failed ({e!r}); starting fresh")
+                if is_backup:
+                    print(f"[store] {candidate} is unreadable too ({e!r}); "
+                          f"starting from the defaults")
+                else:
+                    print(f"[store] {candidate} is unreadable ({e!r}); "
+                          f"trying the backup")
+                continue
+            for k, v in disk.items():
+                self.state[k] = v
+            if is_backup:
+                self.recovered = True
+                print(f"[store] RECOVERED from {candidate} (the live save was "
+                      f"unreadable); the next save repairs the live file")
+            else:
+                print(f"[store] loaded {candidate}")
+            break
         # a state file written by an older build gets the content-shaped
         # voting/worldEvent sections (_migrate_state); a fresh state already is
         # in that shape, so this is a no-op there.
@@ -460,14 +486,20 @@ class Store:
                         os.fsync(f.fileno())
                     except OSError:
                         pass
-                if os.path.isfile(self.path) and not os.path.isfile(self.path + ".bak"):
+                # rotate the backup on EVERY save: .bak is then always "the
+                # last known good file", not "the file from the first run"
+                if os.path.isfile(self.path):
                     try:
                         shutil.copy2(self.path, self.path + ".bak")
                     except OSError:
                         pass
                 os.replace(tmp, self.path)
+                self.saves = getattr(self, "saves", 0) + 1
+                return True
             except Exception as e:                    # noqa: BLE001
-                print(f"[store] save failed ({e!r})")
+                print(f"[store] save FAILED ({e!r}) - the previous {self.path} "
+                      f"is intact and .bak keeps the save before it")
+                return False
 
     # ---- player helpers ----
     def player(self, pid="default"):

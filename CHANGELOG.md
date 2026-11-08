@@ -53,6 +53,12 @@ Fixed
   server that looks alive while the game talks to another process), and the save
   file is protected by an exclusive lock (`state.json.lock`). Both refuse loudly
   and touch nothing.
+- **The save heals itself.** `state.json.bak` now rotates on **every** save (so
+  it is always "the last known good file", not "the file from the first run"),
+  and an unreadable `state.json` is recovered from the backup instead of being
+  reset to the defaults - the old behaviour overwrote the player's progress with
+  an empty document on the next save. `Store.save()` also returns whether it
+  worked.
 - **`server/probe_rmc.py`**: a LIVE self-check over the websocket the game
   actually uses - it votes once in the World Council, then reads the council's
   bars, the career map and the event, and prints `ALL LIVE PROBES PASSED`.

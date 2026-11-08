@@ -72,8 +72,18 @@ Replies are byte-exact for each method: the field order and little-endian types
 in `rv_shapes/` were recovered from the client's own readers, and the test suite
 re-implements an independent decoder so a wrong layout cannot agree with itself.
 
-State (your ARK items, the election you voted in, world-event progress) lives in
-`server/state.json` and survives restarts.
+State (your ARK items, the election you voted in, world-event progress, the
+campaign's numbers) lives in `server/state.json` and survives restarts. It is
+written atomically (`.tmp` + fsync + `os.replace`), `state.json.bak` rotates on
+every save, and an unreadable live file is recovered from the backup rather than
+reset. One server per save: the HTTP port is bound before anything starts and the
+file is locked (`state.json.lock`), so two servers can never overwrite each
+other's progress.
+
+Every request body from the client begins with a 4-byte class word before its
+arguments (`rmc_services.request_reader()` skips it) - reading from offset 0
+turned a World Council vote into "faction 1001" and lost it, and made every
+achievement id 0.
 
 ## What the game actually does, end to end
 

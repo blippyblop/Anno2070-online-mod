@@ -566,6 +566,34 @@ def test_json_file_is_the_save(tmp):
     check("the previous save is kept once", os.path.isfile(path + ".bak"))
     check("no temp file is left behind", not os.path.isfile(path + ".tmp"))
 
+    # the backup rotates on EVERY save, so .bak is always "the last known good
+    # file" and never "the file from the first run"
+    store.state["marker"] = 1
+    check("a save reports success", store.save() is True)
+    store.state["marker"] = 2
+    store.save()
+    bak = json.load(open(path + ".bak", encoding="utf-8"))
+    live = json.load(open(path, encoding="utf-8"))
+    check("the backup holds the state BEFORE the last save",
+          bak.get("marker") == 1 and live.get("marker") == 2,
+          (bak.get("marker"), live.get("marker")))
+
+    # and a corrupt live file is recovered from the backup, not reset to zero
+    good = sorted((int(k), int(v)) for k, v in
+                  live["players"]["default"]["reputation"].items())
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write('{"players": {broken')
+    recovered = R.open_store(path)
+    check("a corrupt save is recovered from .bak", recovered.recovered is True)
+    check("... with the player's points intact",
+          sorted((int(k), int(v)) for k, v in
+                 recovered.player("default")["reputation"].items()) == good,
+          recovered.player("default")["reputation"])
+    recovered.save()
+    check("... and the next save repairs the live file",
+          isinstance(json.load(open(path, encoding="utf-8")), dict),
+          open(path, encoding="utf-8").read()[:40])
+
     report = os.path.join(HERE, os.pardir, "server", "state_report.py")
     out = subprocess.run([sys.executable, report, path], stdout=subprocess.PIPE,
                          stderr=subprocess.STDOUT, universal_newlines=True,
