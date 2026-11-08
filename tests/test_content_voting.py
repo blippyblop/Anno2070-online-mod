@@ -765,6 +765,75 @@ def test_apply_vote():
 # 6. hygiene: no I/O, no import-time effects, no cross-module imports
 # --------------------------------------------------------------------------
 
+
+
+def test_vote_record_is_created():
+    """A slot with no ``infos`` document must still remember the own vote.
+
+    The reported bug: a save whose ``voting.infos`` held only slot 0 recorded a
+    World Council vote in the counts and the vote log, wrote the own vote
+    nowhere, and the panel therefore said "not voted" after a restart - so the
+    vote could be cast again (and a second +50 was only prevented by the reward
+    ticket, not by the election).
+    """
+    print("\n-- test_vote_record_is_created")
+
+    # A. a partial save: infos has slot 0 only (exactly the live shape)
+    state = cv.default_state(NOW)
+    del state["infos"][1]
+    del state["counts"][1]
+    del state["voters"][1]
+    cv.apply_vote(state, 1, cv.FACTION_TECH, voter="Player", now=NOW)
+    check(1 in state["infos"], "apply_vote materialises the missing document")
+    eq(cv.own_vote(state["infos"][1]), cv.FACTION_TECH,
+       "the created document carries the own vote")
+    eq(cv.vote_id(state["infos"][1]), cv.COUNCIL_VOTE_ID,
+       "and the Vote() id of the council slot (1001), not the slot number")
+
+    # B. it survives the JSON round-trip a restart performs
+    reloaded = json.loads(json.dumps(state))
+    elections = cv.elections_from_state(reloaded, NOW)
+    eq(elections[1]["f6"], cv.FACTION_TECH,
+       "after a restart the council reports the vote (no re-vote possible)")
+    eq(elections[1]["f2"], cv.COUNCIL_VOTE_ID, "and keeps its Vote() id")
+    eq(elections[0]["f6"], cv.FACTION_INVALID, "the senate is untouched")
+
+    # C. an old save with votes but no document heals from the vote log alone
+    legacy = {"infos": {0: state["infos"][0]},
+              "counts": {0: dict(state["counts"][0])},
+              "votes": [{"voter": "Player", "choice": cv.FACTION_TECH,
+                         "ts": 1794177772, "id": 1}],
+              "voters": {1: [{"voter": "Player", "a": cv.FACTION_TECH, "b": 1}]}}
+    derived = cv.elections_from_state(legacy, NOW, voter="Player")
+    eq(derived[1]["f6"], cv.FACTION_TECH,
+       "the own vote is recovered from the vote log")
+    eq(cv.elections_from_state(legacy, NOW)["f6"][1] if False else
+       cv.elections_from_state(legacy, NOW)[1]["f6"], cv.FACTION_INVALID,
+       "... only when a voter is known (no guessing)")
+    fixed = cv.heal_infos(legacy, NOW)
+    check(fixed >= 2, "heal_infos reports what it repaired")
+    eq(legacy["infos"][1]["f6"], cv.FACTION_TECH,
+       "heal_infos writes the recovered own vote into the save")
+    eq(cv.own_vote_from_votes(legacy, 1, "Player"), cv.FACTION_TECH,
+       "own_vote_from_votes is the shared derivation")
+
+    # D. a change of mind reads back as the newest choice
+    state2 = cv.default_state(NOW)
+    cv.apply_vote(state2, 0, cv.FACTION_ECO, voter="Player", now=NOW)
+    cv.apply_vote(state2, 0, cv.FACTION_TYCOON, voter="Player", now=NOW)
+    eq(cv.elections_from_state(state2, NOW, voter="Player")[0]["f6"],
+       cv.FACTION_TYCOON, "the newest vote wins")
+
+    # E. key style is preserved, so a save never mixes "0" and 1
+    mixed = {"infos": {"0": dict(state["infos"][0])}, "counts": {"0": {}},
+             "votes": [], "voters": {}}
+    cv.apply_vote(mixed, 1, cv.FACTION_ECO, voter="Player", now=NOW)
+    check(all(isinstance(k, str) for k in mixed["infos"]),
+          "a new key follows the existing (string) key style")
+    json.dumps(mixed, sort_keys=True)          # would raise on a mixed-key dict
+    check(True, "the result still serialises with sorted keys")
+
+
 def test_hygiene():
     print("\n-- test_hygiene")
     path = os.path.join(ROOT, "server", "content_voting.py")
@@ -802,7 +871,8 @@ def test_hygiene():
 
 def main():
     for fn in (test_packed_layout, test_roundtrip, test_default_election,
-               test_wire_decode, test_apply_vote, test_hygiene):
+               test_wire_decode, test_apply_vote, test_vote_record_is_created,
+               test_hygiene):
         fn()
     print("\n%d checks, %d failed" % (CHECKS, len(FAILURES)))
     if FAILURES:

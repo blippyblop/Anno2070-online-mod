@@ -349,11 +349,26 @@ def _migrate_state(state):
     """
     if not isinstance(state, dict):
         return state
+    healed = 0
     voting = state.get("voting")
     if isinstance(voting, dict):
         if not isinstance(voting.get("infos"), dict):
             voting["infos"] = content_voting.default_elections()
             voting.pop("votingInfo", None)
+        # every served slot must own a document: a save written before the
+        # World Council slot existed has only infos["0"], which made the
+        # council's own vote (f5) unrecoverable.  heal_infos() creates the
+        # missing record and refills the own vote from the durable vote log.
+        try:
+            fixed = content_voting.heal_infos(voting)
+        except Exception as exc:                     # noqa: BLE001
+            fixed = 0
+            print(f"[store] voting heal failed ({exc!r}); the votes themselves "
+                  f"are untouched")
+        if fixed:
+            healed += int(fixed)
+            print(f"[store] repaired {fixed} voting document field(s) from the "
+                  f"vote log")
         if not isinstance(voting.get("counts"), dict) and not voting.get("votes"):
             voting["counts"] = {0: dict(content_voting.DEFAULT_COUNTS)}
     we = state.get("worldEvent")
@@ -399,6 +414,9 @@ def _migrate_state(state):
                 # store.save()'s sort_keys raise TypeError and lose the write
                 doc["reputation"] = {int(k): v for k, v in rep.items()
                                      if str(k).lstrip("-").isdigit()}
+    # the caller (load) persists the document when this reports a repair, so a
+    # healed save is written back instead of being re-healed every start
+    state["_healed"] = int(healed)
     return state
 
 
@@ -501,6 +519,11 @@ class Store:
         # voting/worldEvent sections (_migrate_state); a fresh state already is
         # in that shape, so this is a no-op there.
         _migrate_state(self.state)
+        healed = int(self.state.pop("_healed", 0) or 0)
+        if healed:
+            # write the repair back: the file itself must carry the council's
+            # own vote, not just this process's memory of it
+            self.save()
 
     def save(self):
         """Write the whole document atomically, keeping one previous copy.
@@ -1683,9 +1706,16 @@ def _void_player(proto, method):
 # the map in the GetVotingInfos reply MUST contain key 0 --
 # ``elections_from_state`` guarantees exactly that.
 
-def _elections(store):
-    """The election map the store currently serves (key 0 always present)."""
-    return content_voting.elections_from_state(store.state.get("voting"))
+def _elections(store, voter=None):
+    """The election map the store currently serves (key 0 always present).
+
+    ``voter`` is the session player.  It only matters for the own-vote field:
+    when the stored document lost it (an older save, or a slot whose record was
+    never created) the value is recovered from the vote log, so the panel says
+    "voted" instead of letting the player vote again.
+    """
+    return content_voting.elections_from_state(store.state.get("voting"),
+                                               voter=voter)
 
 
 def _election_id(store):
@@ -1700,7 +1730,8 @@ def _election_id(store):
 
 def h_get_voting_infos(store, r, ctx):
     """``list<VotingInfo>`` -- the elections the senate screen renders."""
-    infos = content_voting.voting_infos(elections=_elections(store))
+    infos = content_voting.voting_infos(elections=_elections(store,
+                                                             _ctx_pid(ctx)))
     return _reply(VOTING, "GetVotingInfos_V1", infos=infos)
 
 

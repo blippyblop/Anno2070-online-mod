@@ -128,6 +128,28 @@ def main():
     check("the senate bars are NOT the council bars", senate != counts,
           (senate, counts))
 
+    # 1b. the council's OWN VOTE must come back in GetVotingInfos (the bug
+    #     report: "I vote, restart, and the vote can be done again")
+    infos = fields(rpc("VotingServiceProtocol", "GetVotingInfos_V1",
+                       bytes.fromhex("010000000b00566f74696e67496e666f000100")))
+    n = int.from_bytes(infos[:4], "little")
+    docs = {}
+    for i in range(n):
+        rec = infos[4 + i * 49: 4 + (i + 1) * 49]
+        docs[int.from_bytes(rec[0:4], "little")] = {
+            "vote_id": int.from_bytes(rec[4:8], "little"),
+            "phase": rec[12],
+            "own": int.from_bytes(rec[21:25], "little", signed=True)}
+    check("GetVotingInfos serves the senate and the World Council",
+          set(docs) >= {0, 1}, docs)
+    check("the council document keeps its Vote() id 1001",
+          docs.get(1, {}).get("vote_id") == council_id, docs.get(1))
+    check("the vote phase is open (f3 = 1) so the panel draws the vote UI",
+          docs.get(1, {}).get("phase") == 1, docs.get(1))
+    check("the council reports OUR vote (own vote = the faction just cast) - "
+          "this is what makes it survive a restart",
+          docs.get(1, {}).get("own") == 2, docs.get(1))
+
     # 2. the career document answers for all three factions
     career = u32map(rpc("PlayerProfileServiceProtocol", "GetReputationPoints_V1"))
     check("GetReputationPoints serves the three factions",

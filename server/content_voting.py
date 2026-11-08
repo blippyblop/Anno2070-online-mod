@@ -411,7 +411,7 @@ def vote_id(info):
         return 0
 
 
-def elections_from_state(state=None, now=None, key=None):
+def elections_from_state(state=None, now=None, key=None, voter=None):
     """Build the election map from a store state.
 
     Glue for ``rmc_services.h_get_voting_infos``: ``state`` may be the whole
@@ -426,6 +426,11 @@ def elections_from_state(state=None, now=None, key=None):
     want one slot back (``key=0`` -> ``{0: ...}``).  Every slot is restored --
     restoring only slot 0 is why a World Council vote came back as "not voted"
     after a restart (the council is slot 1, Vote() id 1001).
+
+    ``voter`` is the session player: when the stored document has no usable own
+    vote (a save written before the record existed, or one whose ``infos`` map
+    never had that slot), the own vote is recovered from the vote log, which is
+    what makes an existing save heal itself instead of needing a migration.
     """
     elections = default_elections(now)
     if key is not None:
@@ -440,14 +445,18 @@ def elections_from_state(state=None, now=None, key=None):
             record = _lookup(infos, slot)
         if not isinstance(record, dict) and isinstance(legacy, dict) and slot == 0:
             record = legacy
-        if not isinstance(record, dict):
-            continue
-        try:
-            own = int(record.get("f6", FACTION_INVALID))
-        except (TypeError, ValueError):
-            own = FACTION_INVALID
-        election["f6"] = own if own in FACTIONS else FACTION_INVALID
-        if "running" in record:
+        own = FACTION_INVALID
+        if isinstance(record, dict):
+            try:
+                own = int(record.get("f6", FACTION_INVALID))
+            except (TypeError, ValueError):
+                own = FACTION_INVALID
+        if own not in FACTIONS and voter is not None:
+            # self-healing: the durable vote log knows what the document lost
+            own = own_vote_from_votes(st, slot, voter)
+        if isinstance(record, dict) or own in FACTIONS:
+            election["f6"] = own if own in FACTIONS else FACTION_INVALID
+        if isinstance(record, dict) and "running" in record:
             election["running"] = bool(record["running"])
     return elections
 
@@ -506,6 +515,162 @@ def _lookup(container, key):
     if text in container:
         return container[text]
     return None
+
+
+def _put(container, key, value):
+    """``container[key] = value`` keeping the container's existing key style.
+
+    A state file that has been to disk uses ``"0"``/``"1"``; a fresh in-memory
+    one uses ``0``/``1``.  Mixing the two in one dict is what makes
+    ``json.dump(sort_keys=True)`` raise ``TypeError: '<' not supported between
+    instances of 'int' and 'str'`` - so a new key copies the style already in
+    use (and a key that is already present is reused, whatever its spelling).
+    """
+    if not isinstance(container, dict):
+        return None
+    existing = None
+    for candidate in (key, str(key)):
+        if candidate in container:
+            existing = candidate
+            break
+    if existing is None:
+        str_keys = sum(1 for k in container if isinstance(k, str))
+        int_keys = sum(1 for k in container if isinstance(k, int))
+        existing = str(key) if str_keys > int_keys else key
+    container[existing] = value
+    return value
+
+
+def own_vote_from_votes(state, election_id, voter):
+    """The faction ``voter`` cast in ``election_id``, or ``FACTION_INVALID``.
+
+    The vote log (``state["votes"]``) is the durable record: it survives every
+    older build, and a save can carry it while the ``infos`` document that is
+    *supposed* to mirror it is missing (that is exactly how a World Council
+    vote came back as "not voted").  Newest record wins, so a change of mind
+    reads back as the latest choice.
+    """
+    st = _voting_state(state) or {}
+    votes = st.get("votes") if isinstance(st, dict) else None
+    if not isinstance(votes, (list, tuple)):
+        return FACTION_INVALID
+    try:
+        election_id = int(election_id)
+    except (TypeError, ValueError):
+        return FACTION_INVALID
+    wanted = str(voter or "")
+    for vote in reversed(votes):
+        if not isinstance(vote, dict):
+            continue
+        if _as_election_id(vote.get("id", 0)) != election_id:
+            continue                  # a record without ``id`` is election 0
+        if str(vote.get("voter", "") or "") != wanted:
+            continue
+        try:
+            choice = int(vote.get("choice", FACTION_INVALID))
+        except (TypeError, ValueError):
+            continue
+        if choice in FACTIONS:
+            return choice
+    return FACTION_INVALID
+
+
+def _ensure_info(state, election_id, now=None):
+    """The ``infos`` record for one slot, created if the save has none.
+
+    ``apply_vote`` used to write the own-vote field only when a record already
+    existed, and nothing ever created one: a save whose ``infos`` map held just
+    slot 0 therefore recorded a council vote in the counts/votes and lost the
+    own vote for ever (the "World Council vote can be done again after a
+    restart" report).  Creating the record here also repairs such a save the
+    first time anything touches the election.
+    """
+    election_id = _as_election_id(election_id)
+    st = _voting_state(state)
+    if not isinstance(st, dict):
+        return None
+    infos = st.get("infos")
+    if not isinstance(infos, dict):
+        infos = st["infos"] = {}
+        legacy = st.get("votingInfo")
+        if isinstance(legacy, dict):
+            record = {"id": 0}
+            record.update({k: v for k, v in legacy.items() if k != "id"})
+            _put(infos, 0, record)
+    record = _lookup(infos, election_id)
+    if isinstance(record, dict):
+        return record
+    fresh = default_election(now, key=election_id,
+                             vote_id=_default_vote_id(election_id))
+    return _put(infos, election_id, fresh)
+
+
+def _default_vote_id(election_id):
+    """The ``Vote()`` id for a slot we have to materialise."""
+    election_id = _as_election_id(election_id)
+    return COUNCIL_VOTE_ID if election_id == 1 else election_id
+
+
+def voters_in_election(state, election_id):
+    """The distinct voters the log knows for one election, oldest first."""
+    st = _voting_state(state) or {}
+    votes = st.get("votes") if isinstance(st, dict) else None
+    out = []
+    for vote in votes if isinstance(votes, (list, tuple)) else ():
+        if not isinstance(vote, dict):
+            continue
+        if _as_election_id(vote.get("id", 0)) != _as_election_id(election_id):
+            continue
+        name = str(vote.get("voter", "") or "")
+        if name and name not in out:
+            out.append(name)
+    return out
+
+
+def heal_infos(state, now=None, voter=None):
+    """Make ``infos`` hold a record per served slot, with the own vote filled in.
+
+    Called on every store load (``rmc_services._migrate_state``) so a save
+    written by an older build is repaired *before* it is served - and so the
+    file itself carries the own vote, which is what the status report and any
+    hand inspection read.  Returns the number of fields created or fixed.
+
+    The own vote is a *per-player* value, so with no ``voter`` it is only
+    written when the election's log has exactly one voter (this server is
+    single-player, so that is the normal case); a shared election is left for
+    ``elections_from_state(voter=...)`` to answer per session.  Guessing the
+    wrong player's vote into the document would be worse than leaving it unset.
+    """
+    st = _voting_state(state)
+    if not isinstance(st, dict):
+        return 0
+    fixed = 0
+    for slot in default_elections(now):
+        record = _lookup(st.get("infos"), slot)
+        existed = isinstance(record, dict)
+        record = _ensure_info(st, slot, now)
+        if not isinstance(record, dict):
+            continue
+        if not existed:
+            fixed += 1
+        try:
+            own = int(record.get("f6", FACTION_INVALID))
+        except (TypeError, ValueError):
+            own = FACTION_INVALID
+        if own in FACTIONS:
+            continue
+        if voter is not None:
+            who = str(voter)
+        else:
+            known = voters_in_election(st, slot)
+            who = known[0] if len(known) == 1 else None
+        if who is None:
+            continue
+        derived = own_vote_from_votes(st, slot, who)
+        if derived in FACTIONS:
+            record["f6"] = derived
+            fixed += 1
+    return fixed
 
 
 def _tally_votes(state, election_id):
@@ -697,8 +862,7 @@ def apply_vote(state, election_id, faction, voter="", now=None):
     counts = {f: counts[f] for f in sorted(counts)}
     target = _lookup(stored, election_id)
     if not isinstance(target, dict):
-        stored[election_id] = dict(counts)
-        target = stored[election_id]
+        target = _put(stored, election_id, dict(counts))
     else:
         target.clear()
         target.update(counts)
@@ -719,19 +883,19 @@ def apply_vote(state, election_id, faction, voter="", now=None):
         voters = st["voters"] = {}
     bucket = _lookup(voters, election_id)
     if not isinstance(bucket, list):
-        bucket = voters[election_id] = []
+        bucket = _put(voters, election_id, [])
     bucket.append({"voter": str(voter or ""), "a": faction, "b": 1})
 
-    # the next GetVotingInfos must report f5 = this faction (spec SS5.3)
-    infos = st.get("infos")
-    if not isinstance(infos, dict):
-        infos = st.get("votingInfo") if isinstance(st.get("votingInfo"), dict) else None
-    if isinstance(infos, dict):
-        record = _lookup(infos, election_id)
-        if isinstance(record, dict):
-            record["f6"] = faction
+    # the next GetVotingInfos must report f5 = this faction (spec SS5.3) --
+    # and it must survive a restart, so the record is CREATED when the save has
+    # none for this slot.  Writing only into an existing record is why a World
+    # Council vote (slot 1) came back as "not voted" while the senate (slot 0,
+    # whose record every save has) was fine.
+    record = _ensure_info(st, election_id, now)
+    if isinstance(record, dict):
+        record["f6"] = faction
     legacy = st.get("votingInfo")
-    if election_id == 0 and isinstance(legacy, dict) and legacy is not infos:
+    if election_id == 0 and isinstance(legacy, dict) and legacy is not record:
         legacy["f6"] = faction
 
     return counts

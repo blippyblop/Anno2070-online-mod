@@ -2,6 +2,31 @@
 
 ## 0.1.2 - 2026-11-08
 
+Fixed (reported after the first live session: "I vote in the World Council,
+restart, and the vote can be done again")
+- **The World Council's own vote was never persisted.** `content_voting.apply_vote`
+  wrote the own-vote field only into a document that already existed, and nothing
+  created one: every save has `voting.infos["0"]` (the senate) but never
+  `infos["1"]` (the council), so a council vote landed in the counts, the vote
+  log and the reward book and the *own vote* was dropped. `GetVotingInfos_V1`
+  then rebuilt the council document with `f5 = 0xFFFFFFFF` ("not voted"), which
+  is the only thing the client reads to decide whether the vote UI is locked -
+  so the vote could be cast again (the reputation was still protected by the
+  reward ticket, so no double pay). `apply_vote` now creates the missing
+  document (with the correct Vote id, 1001), `elections_from_state(voter=pid)`
+  recovers the own vote from the durable vote log when a stored document lacks
+  it, and `heal_infos()` repairs an existing save on load - including the user's
+  live save (`infos` gains `"1"` with `f6 = 2`) and writes it back once.
+- New `docs/voting.md`: the two documents, the client's `f3` gate, why `f5` is
+  the only "you voted" signal (with the function addresses), and the wire dump
+  knob (`RV_DUMP_REPLY=1`) that settles any future "did the server say it?"
+  question by hex-dumping reply bodies.
+- New keys in the voting state now copy the file's existing key style (`"0"` vs
+  `0`); a mixed-key dict made `json.dump(sort_keys=True)` raise and silently fall
+  back to an unsorted write.
+- `server/probe_rmc.py` now also proves the council's own vote comes back
+  (`GetVotingInfos` → key 1 / vote id 1001 / own vote = the faction just cast).
+
 Deployed
 - Installed to `C:\projects\Anno2070` with `packaging/update-install.ps1`: the
   running server is stopped first, everything it touches is backed up to

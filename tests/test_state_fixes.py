@@ -853,6 +853,118 @@ def test_campaign_payout(tmp):
     check("f7 is the campaign target the reply also carries",
           doc["g"] == summary["target"], (doc["g"], summary["target"]))
 
+
+
+#: The save the user's machine actually had after voting in the World Council:
+#: a council vote in ``votes``/``counts``, reputation paid, and **no**
+#: ``infos["1"]`` document - the shape that made the panel forget the vote and
+#: let it be cast again.  Verbatim (keys become strings on disk, like a real
+#: state file).
+LIVE_COUNCIL_SAVE = {
+    "schema": 2,
+    "players": {"default": {"reputation": {"0": 50, "2": 50}}},
+    "voting": {
+        "infos": {"0": {"f10": -1, "f2": 0, "f3": 0, "f6": 0, "f9": -1, "id": 0,
+                        "running": True, "start": 136009315888,
+                        "votesA": 136009709104, "votesB": 136010626608}},
+        "counts": {"0": {"0": 6, "1": 12, "2": 3}, "1": {"0": 0, "1": 0, "2": 1}},
+        "rewarded": {"1:default": 2},
+        "votes": [{"choice": 0, "id": 0, "ts": 1794164427, "voter": "default"},
+                  {"choice": 2, "id": 1, "ts": 1794177772, "voter": "default"}],
+        "voters": {"0": [{"a": 0, "b": 1, "voter": "default"}],
+                   "1": [{"a": 2, "b": 1, "voter": "default"}]},
+    },
+}
+
+#: The 12 bytes the client really sends for a World Council vote for Tech
+#: (evidence: live log 2026-11-08 22:45:43, call=55).
+COUNCIL_VOTE_BODY = bytes.fromhex("00000000" "e9030000" "02000000")
+
+
+def voting_docs(store, voter="default"):
+    """The GetVotingInfos_V1 documents as (key, f2, running, own vote)."""
+    body = body_of(VOTING, "GetVotingInfos_V1", store,
+                   bytes.fromhex("010000000b00566f74696e67496e666f000100"))
+    count = int.from_bytes(body[:4], "little")
+    out = []
+    for i in range(count):
+        rec = body[4 + i * 49: 4 + (i + 1) * 49]
+        out.append((int.from_bytes(rec[0:4], "little"),        # map key
+                    int.from_bytes(rec[4:8], "little"),        # Vote() id
+                    rec[12],                                   # vote phase bool
+                    int.from_bytes(rec[21:25], "little", signed=True)))
+    return out
+
+
+def test_council_vote_survives_a_restart(tmp):
+    """The World Council's own vote must come back after restarting everything."""
+    print("the World Council vote survives a restart (the reported bug)")
+    path = os.path.join(tmp, "council-live.json")
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(LIVE_COUNCIL_SAVE, fh)
+
+    # A. an existing save is repaired on load: no new vote needed
+    store = R.open_store(path)
+    check("the load repairs the missing council document",
+          sorted(store.state["voting"]["infos"]) == ["0", "1"],
+          sorted(store.state["voting"]["infos"]))
+    docs = dict((key, (f2, running, own)) for key, f2, running, own in voting_docs(store))
+    check("the council document keeps its Vote() id", docs.get(1, (0,))[0] == CV.COUNCIL_VOTE_ID,
+          docs)
+    check("the council document says VOTED (own vote = the faction cast)",
+          docs.get(1, (0, 0, -1))[2] == CV.FACTION_TECH, docs)
+    check("the vote phase is open, so the panel draws the vote UI",
+          docs.get(1, (0, 0, -1))[1] == 1, docs)
+    check("the senate document still says its own vote",
+          docs.get(0, (0, 0, -1))[2] == CV.FACTION_ECO, docs)
+
+    # B. a partially populated save + a real vote creates the record
+    path2 = os.path.join(tmp, "council-partial.json")
+    partial = json.loads(json.dumps(LIVE_COUNCIL_SAVE))
+    partial["voting"]["votes"] = []
+    partial["voting"]["voters"] = {}
+    partial["voting"]["counts"] = {"0": {"0": 6, "1": 12, "2": 3}}
+    partial["voting"]["rewarded"] = {}
+    partial["players"]["default"]["reputation"] = {}
+    with open(path2, "w", encoding="utf-8") as fh:
+        json.dump(partial, fh)
+    store2 = R.open_store(path2)
+    payload(VOTING, "Vote_V1", store2, COUNCIL_VOTE_BODY[4:])   # payload() adds the prologue
+    reopened = R.open_store(path2)
+    docs = dict((key, (f2, running, own)) for key, f2, running, own in voting_docs(reopened))
+    check("a council vote with no document creates one, keyed 1",
+          1 in docs and docs[1][0] == CV.COUNCIL_VOTE_ID, docs)
+    check("... and its own vote survives the restart", docs[1][2] == CV.FACTION_TECH, docs)
+    check("... and the vote paid once",
+          reopened.player("default")["reputation"] == {CV.FACTION_TECH: CV.VOTE_REWARD},
+          reopened.player("default")["reputation"])
+
+    # C. voting again (a client that still shows "not voted") pays nothing and
+    #    does not lose the own vote
+    rep_before = dict(reopened.player("default")["reputation"])
+    payload(VOTING, "Vote_V1", reopened, COUNCIL_VOTE_BODY[4:])
+    check("a repeated council vote pays nothing more",
+          reopened.player("default")["reputation"] == rep_before,
+          reopened.player("default")["reputation"])
+    docs = dict((key, own) for key, _f2, _r, own in voting_docs(reopened))
+    check("... and the council still reads VOTED", docs.get(1) == CV.FACTION_TECH, docs)
+
+    # D. the whole state survives a JSON round-trip with no int/str key crash
+    text = json.dumps(reopened.state, sort_keys=True)      # raises on mixed keys
+    again = json.loads(text)
+    CE_ok = content_voting_docs(again)
+    check("the save serialises with sorted keys (no int/str key mix)",
+          CE_ok.get(1) == CV.FACTION_TECH, CE_ok)
+
+
+def content_voting_docs(state):
+    """slot -> own vote, straight from the saved file (no store involved)."""
+    import content_voting as _CV
+    return {slot: info.get("f6")
+            for slot, info in _CV.elections_from_state(state.get("voting"),
+                                                       voter="default").items()}
+
+
 def main():
     tmp = tempfile.mkdtemp(prefix="anno-statefix-")
     try:
@@ -870,6 +982,7 @@ def main():
         test_stats_capped()
         test_campaign_month()
         test_the_request_prologue(tmp)
+        test_council_vote_survives_a_restart(tmp)
         test_statistics_persist(tmp)
         test_reputation_never_goes_backwards(tmp)
         test_campaign_payout(tmp)

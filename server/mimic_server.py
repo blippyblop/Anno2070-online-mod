@@ -976,6 +976,11 @@ def rv_rmc_reply(req, return_value=0, error_code=0, body=b""):
             inner += b"".join(struct.pack("<I", v & 0xFFFFFFFF) for v in vals)
         log(f"RV-RMC reply mode={mode} status={status} call={req['call_id']} "
             f"body={len(inner) - (2 + len(proto) + 1 + 1 + 4)}B spec={spec!r}")
+        if os.environ.get("RV_DUMP_REPLY") == "1":
+            # Opt-in hex of the REPLY body.  Without it no capture can prove what
+            # we actually served (the 2026-11-08 investigation needed exactly
+            # this to see the voting document's own-vote field on the wire).
+            log(f"RV-RMC reply-body hex={hexdump(inner, 256)}")
         return struct.pack("<I", len(inner)) + inner
     if mode in ("respss", "respf", "respss0"):
         # respx header (correct) + the login method name + a 6-byte result body
