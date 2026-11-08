@@ -52,7 +52,8 @@ and (b) a client patch (see "Plan B") has something to paint.
 | `SetReputationPoints_V1` | void | **merge-max**: a client echo may raise a total, never lower it |
 | `GetStats_V1` | `u32 count` + N x `StatsEntry` (`u32,u32,u32,u64,u64,u64`) | the rows the client last uploaded (empty if it never did) |
 | `SetStats_V1` | void | an **empty** request is "no rows", never "delete my statistics" |
-| `Upload*` (`StatsReputation`, `FactionRewards`, `ReputationMails`, `SolveDailyQuest`, `WorldStatsStencils`) | void | decoded rows + a bounded hex tail, kept in `players.<pid>.*` |
+| `SolveDailyQuest_V1` | void | captured, **and** pays `DailyQuestReputation` (100, `properties.xml:21267`) once per quest id - a real in-game action, so it earns like one |
+| `Upload*` (`StatsReputation`, `FactionRewards`, `ReputationMails`, `WorldStatsStencils`) | void | decoded rows + a bounded hex tail, kept in `players.<pid>.*` |
 
 `Vote_V1` itself is a **void** reply: nothing about the "+50" can travel with it.
 
@@ -124,8 +125,8 @@ runtime-only, env-gated):
 
 ## What is guaranteed today
 
-* a vote, a world-event mission and a crossed campaign tier all credit
-  reputation, add-only, in `server/state.json` under
+* a vote, a world-event mission, a crossed campaign tier and a solved daily
+  quest all credit reputation, add-only, in `server/state.json` under
   `players.<pid>.reputation` (key = faction id);
 * a vote pays **once per election per player** - clicking the bar again cannot
   farm points or inflate the bars;

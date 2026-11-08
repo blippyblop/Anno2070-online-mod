@@ -16,8 +16,9 @@ Fixed
   unproven non-zero kind is logged once, and every test body speaks the real
   wire (that mirror is why the suites were green while the bug shipped).
 - **Career points are credited at all now.** With the arguments aligned, a vote
-  pays its faction, a solved mission pays its 50/150/300, and a crossed campaign
-  tier pays every player. `GetReputationPoints_V1` always serves the three
+  pays its faction, a solved mission pays its 50/150/300, a crossed campaign tier
+  pays every player, and a solved daily quest pays `DailyQuestReputation` (100,
+  `properties.xml:21267`) once per quest id. `GetReputationPoints_V1` always serves the three
   factions (never an empty map), `SetReputationPoints_V1` is **merge-max** (a
   client echo can raise a total but never lower it), and a vote pays **once per
   election per player** - clicking the bar again cannot farm points.
@@ -47,6 +48,15 @@ Fixed
 - **`AreReputationPointsMissing_V1` polarity is now testable live** with
   `RV_REPUTATION_PROBE=normal|present|missing|alternate` (logged per call):
   the one career question that cannot be settled from the captures.
+- **A second server can no longer overwrite the save.** The HTTP port is bound
+  before anything else starts (a taken port is now a refusal to boot, not a
+  server that looks alive while the game talks to another process), and the save
+  file is protected by an exclusive lock (`state.json.lock`). Both refuse loudly
+  and touch nothing.
+- **`server/probe_rmc.py`**: a LIVE self-check over the websocket the game
+  actually uses - it votes once in the World Council, then reads the council's
+  bars, the career map and the event, and prints `ALL LIVE PROBES PASSED`.
+  `PROGRESS.bat` runs it against the running server.
 - Duplicate (byte-identical) `set_visited`/`_split_instance`/
   `complete_mission`/`completed_missions` definitions removed from
   `content_events.py` - the later copy silently won.

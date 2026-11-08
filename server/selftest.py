@@ -189,12 +189,29 @@ def main():
               u32map(call(reopened, PROFILE, "GetReputationPoints_V1")) == after)
         check("mailbox survived", count_of(call(reopened, MAIL, "GetMails_V1")) == mails_list)
         check("achievements survived",
-              len(reopened.player("default").get("achievements") or []) == 1)
+              len(reopened.player("default").get("achievements") or []) == 1
+              and (reopened.player("default")["achievements"][0].get("id")
+                   == ach[0]["id"]),
+              reopened.player("default").get("achievements"))
+        # the ARK box is the one thing a player would notice losing: it must come
+        # back socket for socket, with the starter set AND the mission reward
+        before_box = store.player("default").get("arkItems") or []
+        after_box = reopened.player("default").get("arkItems") or []
+        check("the ARK box survived item for item", after_box == before_box,
+              (before_box, after_box))
+        check("... and the client is served the same box",
+              count_of(call(reopened, PROFILE, "GetArkItems_V1")) == len(after_box),
+              (count_of(call(reopened, PROFILE, "GetArkItems_V1")), len(after_box)))
         saved = json.load(open(path, encoding="utf-8"))
         check("the file carries a schema version", saved.get("schema") == R.STATE_SCHEMA,
               saved.get("schema"))
         check("the file has an event day key", saved["worldEvent"].get("day") is not None,
               saved["worldEvent"].get("day"))
+        saved_we = saved["worldEvent"] if isinstance(saved["worldEvent"], dict) else {}
+        check("the campaign is in the file (a restart cannot re-roll it)",
+              isinstance(saved_we.get("campaign"), dict)
+              and saved_we["campaign"].get("target", 0) > 0,
+              saved_we.get("campaign"))
         print("        %s (%d bytes)" % (path, os.path.getsize(path)))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

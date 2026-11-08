@@ -726,9 +726,21 @@ def test_statistics_persist(tmp):
     check("UploadStatsReputation_V1 is captured, not discarded",
           bool(captured) and captured[-1]["rows"] == [{"a": 0, "b": 0, "c": 50}],
           captured)
-    payload(PROFILE, "SolveDailyQuest_V1", store, le32(4025240))
-    check("SolveDailyQuest_V1 is captured too",
-          store.player("default").get("dailyQuests"), store.player("default"))
+    # a solved daily quest: count + quest id.  It is an action that pays career
+    # reputation (properties.xml DailyQuestReputation = 100) - once per id.
+    before_rep = sum((store.player("default").get("reputation") or {}).values())
+    payload(PROFILE, "SolveDailyQuest_V1", store, le32(1) + le32(4025240))
+    quests = store.player("default").get("dailyQuests") or []
+    check("SolveDailyQuest_V1 is captured", bool(quests), quests)
+    after_rep = sum((store.player("default").get("reputation") or {}).values())
+    check("... and it paid its career reputation",
+          after_rep - before_rep == R.DAILY_QUEST_REWARD,
+          (before_rep, after_rep))
+    payload(PROFILE, "SolveDailyQuest_V1", store, le32(1) + le32(4025240))
+    check("... but only once per quest id",
+          sum((store.player("default").get("reputation") or {}).values()) == after_rep
+          and len(store.player("default")["dailyQuests"]) == 1,
+          store.player("default")["dailyQuests"])
 
 
 def test_reputation_never_goes_backwards(tmp):

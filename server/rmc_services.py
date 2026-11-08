@@ -1506,6 +1506,54 @@ def _capture_upload(bucket, proto, method, rows=None):
     return handler
 
 
+#: What a solved daily quest is worth in career reputation.  ``properties.xml``
+#: ships ``DailyQuestReputation = 100`` (line 21267) - a real, in-game daily
+#: quest reward, unlike the career ladder itself, which is client-side.  GUESS:
+#: that value is the *in-game* currency reward's sibling; if a live session shows
+#: a different number in the quest's own "+N reputation" toast, change it here.
+DAILY_QUEST_REWARD = 100
+
+
+def h_solve_daily_quest(store, r, ctx):
+    """``SolveDailyQuest_V1``: u32 quest id -> void.
+
+    Two things happen: the call is captured (the reply is void, so the request is
+    the only copy of the fact) and, for a quest id this player has never solved,
+    its reputation is credited to the career map.  Payments are de-duplicated on
+    ``players.<pid>.dailyQuests`` so re-solving (or a replayed request) cannot
+    farm points.  A body we cannot read credits nothing - never invent a quest.
+    """
+    p = store.player(_ctx_pid(ctx))
+    body = r.rest()
+    record = {"ts": int(time.time()), "bytes": len(body),
+              "raw": body[:MAX_UPLOAD_BYTES].hex()}
+    rows = []
+    try:
+        rows = _u32_rows(Reader(body))
+    except Exception:                             # noqa: BLE001
+        rows = []
+    record["rows"] = rows
+    log = p.get("dailyQuests")
+    if not isinstance(log, list):
+        log = p["dailyQuests"] = []
+    known = {_as_int(entry.get("quest"), -1) for entry in log
+             if isinstance(entry, dict)}
+    for quest in rows:
+        if quest in known:
+            continue
+        known.add(quest)
+        log.append({"quest": quest, "ts": int(time.time()),
+                    "reward": DAILY_QUEST_REWARD})
+        _add_reputation(store, _ctx_pid(ctx), DAILY_QUEST_REWARD,
+                        reason="daily quest %d" % quest)
+    del log[:-MAX_UPLOADS]
+    store.save()
+    if LOG is not None:
+        LOG("daily quest: %d bytes, rows=%r (paid %d per new id)"
+            % (len(body), rows, DAILY_QUEST_REWARD))
+    return _reply(PROFILE, "SolveDailyQuest_V1")
+
+
 def _stats_reputation_rows(r):
     """``list<StatsReputation>``: 12 B each (three u32), per
     ``__AV_DDL_StatsReputation_rdv__.c`` (+8/+0xc/+0x10) and the 0xc stride of
@@ -2255,8 +2303,7 @@ METHODS = {
     PROFILE + "::GetReputationPoints_V1": h_get_reputation_points,
     PROFILE + "::AreReputationPointsMissing_V1": h_are_rep_missing,
     PROFILE + "::SetReputationPoints_V1": h_set_reputation_points,
-    PROFILE + "::SolveDailyQuest_V1": _capture_upload(
-        "dailyQuests", PROFILE, "SolveDailyQuest_V1", _u32_rows),
+    PROFILE + "::SolveDailyQuest_V1": h_solve_daily_quest,
     PROFILE + "::UploadFactionRewards_V1": _capture_upload(
         "factionRewards", PROFILE, "UploadFactionRewards_V1", _stats_reputation_rows),
     PROFILE + "::UploadStatsReputation_V1": _capture_upload(
