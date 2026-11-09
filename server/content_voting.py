@@ -270,14 +270,195 @@ DATE_OFFSETS = {
 }
 
 
-def election_window(now=None):
-    """``{"start": dt, "end": dt, "expire": dt}`` (naive UTC) around ``now``.
+# --------------------------------------------------------------------------
+# the simulated electorate: a real-looking election, without a world
+# --------------------------------------------------------------------------
+# A local server has no other players, so the bars would either be frozen
+# filler or empty.  Instead every election is a **simulated contest**: the
+# outcome (the final share per faction) is drawn once per election, and the
+# counted votes are revealed over the election's lifetime with a little noise,
+# so the panel shows a race that is decided by the time the window closes.
+#
+# Everything is a pure function of ``(slot, election index, time)`` - no
+# accumulator, no RNG object, nothing to persist - so a restart mid-election
+# shows exactly the same numbers, on any machine, at any time.
 
-    ``start <= now <= end < expire`` by construction.
+#: Elections are cycles anchored to a fixed date, so "which election is this"
+#: is a fact about the calendar rather than about when the server started.
+VOTE_ANCHOR = datetime.date(2026, 1, 1)
+
+#: How long one election runs, in UTC days, per election slot: the senate is
+#: the quick one (a law vote every few days), the World Council runs a season a
+#: week.  Slots the server does not serve fall back to ``DEFAULT_VOTE_PERIOD``.
+VOTE_PERIOD_DAYS = (3, 7)
+DEFAULT_VOTE_PERIOD = 3
+
+#: How many votes the whole world casts over one election (inclusive range).
+SIM_ELECTORATE = (800, 4200)
+
+#: How many steps the reveal curve is sampled at (more = smoother bar).
+SIM_CURVE_STEPS = 60
+
+#: No faction ever gets less than this share, so a bar is never empty.
+SIM_MIN_SHARE = 0.04
+
+_VOTE_SALT = 0x7E57_2070_0000_0001
+_MIX_MASK = (1 << 64) - 1
+
+
+def _mix(value):
+    """splitmix64: a pure, well-mixed 64-bit hash (no RNG state to persist)."""
+    z = (int(value) + 0x9E3779B97F4A7C15) & _MIX_MASK
+    z = ((z ^ (z >> 30)) * 0xBF58476D1CE4E5B9) & _MIX_MASK
+    z = ((z ^ (z >> 27)) * 0x94D049BB133111EB) & _MIX_MASK
+    return (z ^ (z >> 31)) & _MIX_MASK
+
+
+def _day_ordinal(when=None):
+    """UTC days since 1970-01-01 (the election cycles are counted in these)."""
+    base = _now(when)
+    epoch = datetime.datetime(1970, 1, 1)
+    return (base - epoch).days
+
+
+def election_period_days(slot):
+    """How many days one election of ``slot`` runs."""
+    try:
+        slot = int(slot)
+    except (TypeError, ValueError):
+        slot = 0
+    if 0 <= slot < len(VOTE_PERIOD_DAYS):
+        return int(VOTE_PERIOD_DAYS[slot])
+    return int(DEFAULT_VOTE_PERIOD)
+
+
+def election_index(slot=0, now=None):
+    """Which election of ``slot`` is running at ``now`` (stable per cycle)."""
+    period = election_period_days(slot)
+    anchor = _day_ordinal(VOTE_ANCHOR)
+    return (_day_ordinal(now) - anchor) // period
+
+
+def election_bounds(slot=0, now=None):
+    """``(start_day, end_day, expire_day)`` of the running election."""
+    period = election_period_days(slot)
+    anchor = _day_ordinal(VOTE_ANCHOR)
+    start = anchor + election_index(slot, now) * period
+    return start, start + period, start + period + 7
+
+
+def election_window(now=None, slot=0):
+    """``{"start": dt, "end": dt, "expire": dt}`` of the running election.
+
+    Anchored to the election cycle (not to "now"), so the dates advance by
+    themselves as one election ends and the next begins -
+    ``start <= now < end < expire`` by construction.
     """
+    start, end, expire = election_bounds(slot, now)
+    midnight = datetime.datetime(1970, 1, 1)
+    return {"start": midnight + datetime.timedelta(days=start),
+            "end": midnight + datetime.timedelta(days=end),
+            "expire": midnight + datetime.timedelta(days=expire)}
+
+
+def election_progress(slot=0, now=None):
+    """How far the running election has come, ``0.0`` .. ``1.0``."""
+    start, end, _expire = election_bounds(slot, now)
+    period = max(1, end - start)
+    elapsed = _day_ordinal(now) - start
+    step = (int(elapsed) + 0.0) / period
+    # within the day, refine by the clock so the bar creeps during a session
     base = _now(now)
-    return {name: base + datetime.timedelta(seconds=offset)
-            for name, offset in DATE_OFFSETS.items()}
+    seconds = (base.hour * 3600 + base.minute * 60 + base.second) / 86400.0
+    step += seconds / period
+    return min(1.0, max(0.0, step))
+
+
+def election_shares(slot=0, index=None):
+    """The drawn outcome: ``{faction: share}`` for this election, summing to 1.
+
+    Each election draws three weights and normalises them, with a floor so no
+    bar is empty.  That is what makes one Senate vote a two-horse race and the
+    next a landslide - like the example in the report (50 % / 20 % / 30 %).
+    """
+    if index is None:
+        index = election_index(slot)
+    seed = _mix(_VOTE_SALT ^ (int(index) * 0x9E3779B1) ^ (int(slot) * 0x85EBCA6B))
+    raw = {faction: 1 + _mix(seed + 1 + faction) % 1000 for faction in FACTIONS}
+    total = float(sum(raw.values())) or 1.0
+    shares = {faction: raw[faction] / total for faction in FACTIONS}
+    # lift everything to the floor, then re-normalise the rest
+    fixed = {f: SIM_MIN_SHARE for f in FACTIONS}
+    spare = 1.0 - SIM_MIN_SHARE * len(FACTIONS)
+    rest = {f: max(0.0, shares[f] - SIM_MIN_SHARE) for f in FACTIONS}
+    rest_total = sum(rest.values()) or 1.0
+    for faction in FACTIONS:
+        fixed[faction] = SIM_MIN_SHARE + spare * rest[faction] / rest_total
+    return fixed
+
+
+def election_electorate(slot=0, index=None):
+    """How many votes the world casts over this election (``SIM_ELECTORATE``)."""
+    if index is None:
+        index = election_index(slot)
+    low, high = SIM_ELECTORATE
+    seed = _mix(_VOTE_SALT ^ 0xA5A5 ^ (int(index) * 31) ^ (int(slot) * 0x27D4EB2F))
+    return int(low + seed % (high - low + 1))
+
+
+def _reveal_curve(slot, index, steps=SIM_CURVE_STEPS):
+    """Prefix fractions of the count, one per step: 0 before start, 1 at the end.
+
+    Uneven on purpose (a quiet day, a busy evening), and strictly increasing, so
+    the bars only ever grow.
+    """
+    base = _mix(_VOTE_SALT ^ 0x5EED ^ (int(index) * 7) ^ (int(slot) * 0x9E3779B1))
+    weights = [1 + _mix(base + step) % 1000 for step in range(steps)]
+    total = float(sum(weights)) or 1.0
+    out, running = [], 0
+    for weight in weights:
+        running += weight
+        out.append(running / total)
+    return out
+
+
+def simulated_votes(slot=0, now=None):
+    """The world's counted votes so far: ``{faction: votes}`` (no player vote).
+
+    ``electorate * share * reveal(progress) ** pace`` per faction: the pace is
+    per faction and per election, so early counts can have a different leader
+    than the result (that is the "random variation" of a real count) while the
+    final numbers are exactly the drawn shares.
+    """
+    slot = int(slot)
+    if slot not in (0, 1):
+        # only the elections we actually serve are simulated; an ad-hoc id in a
+        # test must keep its own stored counts
+        return {faction: 0 for faction in FACTIONS}
+    index = election_index(slot, now)
+    shares = election_shares(slot, index)
+    electorate = election_electorate(slot, index)
+    curve = _reveal_curve(slot, index)
+    # a live election is never at a dead zero: the first count is already in
+    # (2 % of the curve), so the bars render from the first second of a cycle
+    # while still reaching exactly 100 % at the end
+    position = (0.02 + 0.98 * election_progress(slot, now)) * len(curve)
+    whole = int(position)
+    fraction = position - whole
+    if whole >= len(curve):
+        revealed = 1.0
+    elif whole == 0:
+        revealed = curve[0] * fraction
+    else:
+        previous = curve[whole - 1]
+        revealed = previous + (curve[whole] - previous) * fraction
+    seed = _mix(_VOTE_SALT ^ 0xBEEF ^ (int(index) * 11) ^ (slot * 0x2545F491))
+    out = {}
+    for faction in FACTIONS:
+        pace = 0.65 + (_mix(seed + 1 + faction) % 1000) / 1000.0 * 0.9   # 0.65..1.55
+        share_part = revealed ** pace if revealed > 0 else 0.0
+        out[faction] = int(round(electorate * shares[faction] * share_part))
+    return out
 
 
 def default_election(now=None, key=0, vote_id=None, running=True,
@@ -451,9 +632,17 @@ def elections_from_state(state=None, now=None, key=None, voter=None):
                 own = int(record.get("f6", FACTION_INVALID))
             except (TypeError, ValueError):
                 own = FACTION_INVALID
+        if isinstance(record, dict) and "election" in record:
+            try:
+                if int(record.get("election")) != election_index(slot, now):
+                    # the document belongs to a previous election: nobody has
+                    # voted in the new one yet, so the buttons must come back
+                    own = FACTION_INVALID
+            except (TypeError, ValueError):
+                pass
         if own not in FACTIONS and voter is not None:
             # self-healing: the durable vote log knows what the document lost
-            own = own_vote_from_votes(st, slot, voter)
+            own = own_vote_from_votes(st, slot, voter, now=now)
         if isinstance(record, dict) or own in FACTIONS:
             election["f6"] = own if own in FACTIONS else FACTION_INVALID
         if isinstance(record, dict) and "running" in record:
@@ -541,8 +730,8 @@ def _put(container, key, value):
     return value
 
 
-def own_vote_from_votes(state, election_id, voter):
-    """The faction ``voter`` cast in ``election_id``, or ``FACTION_INVALID``.
+def own_vote_from_votes(state, election_id, voter, now=None):
+    """The faction ``voter`` cast in the RUNNING election, or ``FACTION_INVALID``.
 
     The vote log (``state["votes"]``) is the durable record: it survives every
     older build, and a save can carry it while the ``infos`` document that is
@@ -559,11 +748,15 @@ def own_vote_from_votes(state, election_id, voter):
     except (TypeError, ValueError):
         return FACTION_INVALID
     wanted = str(voter or "")
+    running = election_index(election_id, now)
     for vote in reversed(votes):
         if not isinstance(vote, dict):
             continue
         if _as_election_id(vote.get("id", 0)) != election_id:
             continue                  # a record without ``id`` is election 0
+        recorded = _vote_instance(vote)
+        if recorded is not None and recorded != running:
+            continue                  # a ballot from an earlier election
         if str(vote.get("voter", "") or "") != wanted:
             continue
         try:
@@ -645,6 +838,12 @@ def heal_infos(state, now=None, voter=None):
     if not isinstance(st, dict):
         return 0
     fixed = 0
+    # legacy ballots: attribute them to the running election of their slot
+    if isinstance(st.get("votes"), list):
+        for vote in st["votes"]:
+            if isinstance(vote, dict) and "election" not in vote:
+                vote["election"] = election_index(vote.get("id", 0), now)
+                fixed += 1
     for slot in default_elections(now):
         record = _lookup(st.get("infos"), slot)
         existed = isinstance(record, dict)
@@ -652,6 +851,12 @@ def heal_infos(state, now=None, voter=None):
         if not isinstance(record, dict):
             continue
         if not existed:
+            fixed += 1
+        if isinstance(record, dict) and "election" not in record:
+            # an older save has no idea which election its ballot belongs to:
+            # attribute it to the running one (it was cast today) so the next
+            # cycle can start clean
+            record["election"] = election_index(slot, now)
             fixed += 1
         try:
             own = int(record.get("f6", FACTION_INVALID))
@@ -666,7 +871,7 @@ def heal_infos(state, now=None, voter=None):
             who = known[0] if len(known) == 1 else None
         if who is None:
             continue
-        derived = own_vote_from_votes(st, slot, who)
+        derived = own_vote_from_votes(st, slot, who, now=now)
         if derived in FACTIONS:
             record["f6"] = derived
             fixed += 1
@@ -805,7 +1010,7 @@ def _denominator(state, election_id, total):
     return max(1, int(total), weight)
 
 
-def voting_stats(state=None, elections=None, now=None):
+def voting_stats(state=None, elections=None, now=None, counts_fn=None):
     """``GetVotingStats_V1`` entries: ``{"id", "f1", "votes"}`` per election.
 
     ``f1`` is the client's percentage denominator (``100*sum/f1``); it is
@@ -816,13 +1021,130 @@ def voting_stats(state=None, elections=None, now=None):
     infos = _normalise_infos(elections, now)
     entries = []
     for key, _record in infos:
-        counts = vote_counts(state, key)
+        counts = (counts_fn(key) if counts_fn is not None
+                  else vote_counts(state, key))
         entries.append({
             "id": key,
             "f1": _denominator(state, key, sum(counts.values())),
             "votes": counts,
         })
     return entries
+
+
+#: Handles for the simulated voters (ours, not the game's text): a plausible
+#: player name per simulated ballot, deterministic so the list never shuffles.
+_SIM_ADJECTIVES = ("Solar", "Tidal", "Nordic", "Verdant", "Cobalt", "Amber",
+                   "Granite", "Harbour", "Prairie", "Meridian", "Basalt",
+                   "Cloudline", "Driftwood", "Ironwood", "Lantern")
+_SIM_NOUNS = ("Envoy", "Trader", "Deacon", "Factor", "Warden", "Scribe",
+              "Prospector", "Counsellor", "Foreman", "Delegate", "Steward",
+              "Assessor", "Harbourmaster", "Auditor", "Broker")
+
+
+def simulated_voter_name(slot, index, rank):
+    """A stable fake ballot name for ``rank`` in one election."""
+    seed = _mix(_VOTE_SALT ^ 0x4E414D45 ^ (int(index) * 13) ^ (int(slot) * 0x9E3779B1)
+                ^ (int(rank) * 0xC2B2AE35))
+    adjective = _SIM_ADJECTIVES[seed % len(_SIM_ADJECTIVES)]
+    noun = _SIM_NOUNS[(seed >> 12) % len(_SIM_NOUNS)]
+    number = 1 + (seed >> 24) % 99
+    return "%s %s %02d" % (adjective, noun, number)
+
+
+def _vote_instance(vote, default=None):
+    """The election instance a stored vote belongs to (``None`` = unrecorded)."""
+    if not isinstance(vote, dict):
+        return default
+    raw = vote.get("election")
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def instance_votes(state, election_id, now=None, instance=None):
+    """The vote log entries that belong to the RUNNING election of ``slot``."""
+    slot = _as_election_id(election_id)
+    if instance is None:
+        instance = election_index(slot, now)
+    st = _voting_state(state) or {}
+    votes = st.get("votes") if isinstance(st, dict) else None
+    out = []
+    for vote in votes if isinstance(votes, (list, tuple)) else ():
+        if not isinstance(vote, dict):
+            continue
+        if _as_election_id(vote.get("id", 0)) != slot:
+            continue
+        recorded = _vote_instance(vote)
+        if recorded is not None and recorded != instance:
+            continue                       # a vote from an earlier election
+        try:
+            choice = int(vote.get("choice", FACTION_INVALID))
+        except (TypeError, ValueError):
+            continue
+        if choice not in FACTIONS:
+            continue
+        out.append({"voter": str(vote.get("voter", "") or ""),
+                    "choice": choice,
+                    "ts": vote.get("ts", 0),
+                    "election": recorded})
+    return out
+
+
+def served_counts(state=None, election_id=0, now=None, simulate=True):
+    """``GetVoteCount_V1``: the simulated world **plus** the player's votes.
+
+    This is what the panels actually show.  ``simulate=False`` gives the old
+    behaviour (stored counts only) and exists for tests and for
+    ``RV_VOTE_SIM=0``.
+    """
+    slot = _as_election_id(election_id)
+    out = simulated_votes(slot, now) if simulate else {f: 0 for f in FACTIONS}
+    for vote in instance_votes(state, slot, now):
+        out[vote["choice"]] = out.get(vote["choice"], 0) + 1
+    return {faction: max(0, int(out.get(faction, 0))) for faction in FACTIONS}
+
+
+def served_voters(state=None, election_id=0, limit=10, now=None, simulate=True):
+    """``GetLastVoters_V1``: the player's ballots first, then the simulated ones.
+
+    The panel shows the newest voters under the bars; a real election count ends
+    with strangers, so the tail is filled from the simulation (consistent with
+    the bars: the faction mix follows the current counts).
+    """
+    slot = _as_election_id(election_id)
+    try:
+        limit = max(0, int(limit))
+    except (TypeError, ValueError):
+        limit = 10
+    if limit == 0:
+        return []
+    out = []
+    for vote in reversed(instance_votes(state, slot, now)):
+        out.append({"voter": vote["voter"] or "Player", "a": vote["choice"], "b": 1})
+        if len(out) >= limit:
+            return out
+    if not simulate:
+        return out[:limit]
+    counts = simulated_votes(slot, now)
+    index = election_index(slot, now)
+    # fill from the biggest faction down, so the tail looks like the count
+    order = sorted(FACTIONS, key=lambda f: (-counts.get(f, 0), f))
+    taken = {f: 0 for f in FACTIONS}
+    rank = 0
+    while len(out) < limit and rank < limit + SIM_CURVE_STEPS:
+        faction = order[rank % len(order)]
+        share = counts.get(faction, 0)
+        if taken[faction] * len(order) < max(1, share):
+            out.append({"voter": simulated_voter_name(slot, index, rank + 1),
+                        "a": faction, "b": 1})
+            taken[faction] += 1
+        rank += 1
+        if rank > 4 * (limit + len(order)):
+            break
+    return out[:limit]
 
 
 def apply_vote(state, election_id, faction, voter="", now=None):
@@ -876,6 +1198,9 @@ def apply_vote(state, election_id, faction, voter="", now=None):
         "ts": int(time.time() if now is None
                   else _now(now).replace(tzinfo=_UTC).timestamp()),
         "id": election_id,
+        # which election this ballot belongs to: a new election must let the
+        # player vote again (own vote) and pay again (reward ticket)
+        "election": election_index(election_id, now),
     })
 
     voters = st.get("voters")
@@ -894,6 +1219,7 @@ def apply_vote(state, election_id, faction, voter="", now=None):
     record = _ensure_info(st, election_id, now)
     if isinstance(record, dict):
         record["f6"] = faction
+        record["election"] = election_index(election_id, now)
     legacy = st.get("votingInfo")
     if election_id == 0 and isinstance(legacy, dict) and legacy is not record:
         legacy["f6"] = faction

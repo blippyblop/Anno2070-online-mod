@@ -1758,14 +1758,16 @@ def h_vote(store, r, ctx):
         # the vote where no panel will ever read it
         election_id = _election_id(store)
     pid = _ctx_pid(ctx)
-    # One reward per (election, player): the panel can be clicked again, and a
-    # repeated Vote_V1 used to add another count and another +50 career points
-    # every time.  The bookkeeping lives in the voting state so it survives a
-    # restart with the rest of the election.
+    # One reward per (SLOT, ELECTION INSTANCE, player): the panel can be clicked
+    # again, and a repeated Vote_V1 used to add another count and another +50
+    # career points every time.  The ticket carries the election instance, so a
+    # new election (a new cycle of the same slot) pays again - which is the
+    # point of an election - while a change of mind inside one election does not.
     rewarded = voting.get("rewarded")
     if not isinstance(rewarded, dict):
         rewarded = voting["rewarded"] = {}
-    ticket = "%d:%s" % (election_id, pid)
+    instance = content_voting.election_index(election_id)
+    ticket = "%d#%d:%s" % (election_id, instance, pid)
     previous = rewarded.get(ticket)
     if previous == faction:
         store.save()
@@ -2028,6 +2030,18 @@ def _voting_slot_for(store, raw_id):
     return _election_id(store)
 
 
+def _vote_simulation_on():
+    """Is the simulated electorate on?  ``RV_VOTE_SIM=0`` turns it off."""
+    return (os.environ.get("RV_VOTE_SIM") or "").strip().lower() not in (
+        "0", "off", "no", "false", "static")
+
+
+def _served_counts(store, slot):
+    """The bars the client shows: simulated world + this player's real votes."""
+    return content_voting.served_counts(store.state, slot,
+                                        simulate=_vote_simulation_on())
+
+
 def h_get_vote_count(store, r, ctx):
     """``map<u32,u32>`` faction -> votes, for the election the client asked for.
 
@@ -2036,7 +2050,7 @@ def h_get_vote_count(store, r, ctx):
     selects the slot -- ignoring it made the council show the senate's bars.
     """
     raw_id = r.u32() if r.remaining() >= 4 else 0
-    counts = content_voting.vote_counts(store.state, _voting_slot_for(store, raw_id))
+    counts = _served_counts(store, _voting_slot_for(store, raw_id))
     return _reply(VOTING, "GetVoteCount_V1", counts=counts)
 
 
@@ -2051,7 +2065,9 @@ def h_get_voting_stats(store, r, ctx):
     the one it rendered.  The request's leading u32, when present, is the Vote
     id, but the reply shape is a list either way, so filtering buys nothing.
     """
-    entries = content_voting.voting_stats(store.state, _elections(store))
+    entries = content_voting.voting_stats(
+        store.state, _elections(store),
+        counts_fn=lambda slot: _served_counts(store, slot))
     return _reply(VOTING, "GetVotingStats_V1", entries=entries)
 
 
@@ -2075,7 +2091,19 @@ def h_get_last_voters(store, r, ctx):
         raw_id = r.u32()
     limit = min(max(0, limit), 64)
     slot = _election_id(store) if raw_id is None else _voting_slot_for(store, raw_id)
-    voters = content_voting.last_voters(store.state, slot, limit)
+    voters = content_voting.served_voters(store.state, slot, limit,
+                                          simulate=_vote_simulation_on())
+    # the panel bolds YOUR row by comparing the name in the list with the profile
+    # name, so a ballot of ours must be sent under the displayed name, not the
+    # internal player id ("default")
+    pid = _ctx_pid(ctx)
+    try:
+        display = str(store.player(pid).get("name") or pid)
+    except Exception:                                # noqa: BLE001
+        display = pid
+    voters = [dict(entry, voter=display)
+              if str(entry.get("voter", "")) == pid else entry
+              for entry in voters]
     return _reply(VOTING, "GetLastVoters_V1", voters=voters)
 
 

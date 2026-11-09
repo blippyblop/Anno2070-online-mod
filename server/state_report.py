@@ -22,6 +22,13 @@ import os
 import sys
 import time
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+try:                                    # the election simulation lives there
+    import content_voting as CONTENT_VOTING
+except Exception:                       # noqa: BLE001 - report must never crash
+    CONTENT_VOTING = None
+
 CHAPTER_TITLES = {
     3054018: "Atomic Terror",
     3054105: "The Eden Project",
@@ -73,20 +80,40 @@ def ark_rows(player):
 
 
 def vote_lines(state):
+    """One line per election: the player's own vote and the counted bars.
+
+    The counted numbers come from the same function the server serves, so this
+    report shows the simulated electorate (plus the player's own ballot) rather
+    than the legacy stored counters.
+    """
     voting = state.get("voting")
     if not isinstance(voting, dict):
         return []
     infos = voting.get("infos")
-    counts = voting.get("counts")
     lines = []
     for slot in sorted(infos or {}, key=lambda k: str(k)):
         info = infos.get(slot) or {}
         my = int(info.get("f6", -1) if info.get("f6") is not None else -1)
         mine = FACTION_NAMES.get(my, "not voted")
-        row = (counts or {}).get(str(slot)) or (counts or {}).get(slot) or {}
-        total = sum(int(v or 0) for v in (row.values() if isinstance(row, dict) else []))
-        name = "senate" if str(slot) == "0" else "World Council" if str(slot) == "1" else "slot %s" % slot
-        lines.append("    %-14s : your vote %-10s  (%d counted)" % (name, mine, total))
+        bars = {}
+        if CONTENT_VOTING is not None:
+            try:
+                bars = CONTENT_VOTING.served_counts(state, int(slot))
+            except Exception:                         # noqa: BLE001
+                bars = {}
+        total = sum(int(v or 0) for v in bars.values())
+        index, progress = "?", 0
+        if CONTENT_VOTING is not None:
+            try:
+                index = CONTENT_VOTING.election_index(int(slot))
+                progress = CONTENT_VOTING.election_progress(int(slot)) * 100
+            except Exception:                         # noqa: BLE001
+                index, progress = "?", 0
+        name = ("senate" if str(slot) == "0"
+                else "World Council" if str(slot) == "1" else "slot %s" % slot)
+        bars_text = "/".join("%d" % int(bars.get(f, 0)) for f in (0, 1, 2))
+        lines.append("    %-14s : your vote %-10s  (%d counted, %s, %.0f%% of "
+                     "election %s)" % (name, mine, total, bars_text, progress, index))
     return lines
 
 

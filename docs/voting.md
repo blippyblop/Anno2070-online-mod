@@ -32,6 +32,47 @@ We serve two documents: **key 0**, Vote id 0 (the Senate) and **key 1**, Vote id
 * `GetVoteCount_V1` / `GetLastVoters_V1` are then polled with that same f2
   (the live session alternates `0` and `1001` every ~10 s).
 
+## The simulated electorate (what the bars actually show)
+
+A local server has no other players, so the bars used to be a frozen filler
+count. They are now a **simulated election**, drawn per election and revealed
+over its lifetime - the same trick as the world-event campaign, and equally
+stateless:
+
+* **Elections are cycles anchored to a fixed date** (`VOTE_ANCHOR = 2026-01-01`):
+  the Senate votes every **3 days**, the World Council every **7**, so
+  "which election is this" is a fact about the calendar. The two dates the panel
+  shows (`f4` start, `f6` end, `f7` expiry) are that cycle's window; today they
+  read `2026-11-09 / 11-12 / 11-19` for the Senate.
+* **Every election draws its own outcome.** Three seeded weights are normalised
+  into shares with a 4 % floor, so one vote is a two-horse race (63/7/29 for the
+  running council election) and the next is a different story. That is the
+  "50 % A / 20 % B / 30 % C" from the report, but drawn.
+* **The count is revealed over time.** Each election has a seeded, strictly
+  increasing reveal curve (uneven, like a real count) and a per-faction *pace*
+  (0.65x..1.55x), so early counts can have a different leader than the result
+  while the last counted ballot lands **exactly** on the drawn shares. An
+  electorate of 800..4200 votes is drawn per election; the first count is
+  already in (2 % of the curve) so the bars are never dead-zero.
+* **Your ballot is added on top**, and only for the *running* election: the vote
+  log records which election instance each ballot belongs to, so a new cycle
+  starts unvoted (you can vote again, and it pays again once).
+* **The voter list is populated too**: your ballot first, then simulated ballots
+  with stable generated handles ("Meridian Scribe 64"), the faction mix
+  following the current count.
+* Everything is a pure function of `(slot, election index, time)`, so a restart
+  mid-election shows exactly the same numbers - nothing to persist, nothing to
+  drift. `RV_VOTE_SIM=0` switches it off and falls back to the stored counts
+  (that is also how the legacy tests run).
+
+`PROGRESS.bat` prints the same numbers the client gets, with the election index
+and how far through the cycle it is:
+
+```
+senate         : your vote Eco   (336 counted, 116/170/50, 13% of election 104)
+World Council  : your vote Tech  (1015 counted, 631/62/322, 63% of election 44)
+```
+
 ## The one thing that means "you already voted"
 
 **f5 only.** Both frames convert the document into a game struct

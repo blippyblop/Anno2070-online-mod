@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.1.3 - 2026-11-09
+
+Added
+- **Simulated elections.** The vote bars were a frozen filler count; they are now
+  a drawn contest that fills up over the election's lifetime. Elections are
+  cycles anchored to a fixed date (Senate every 3 days, World Council every 7),
+  each cycle draws its own outcome (three seeded weights, normalised, 4 % floor -
+  so one vote is a two-horse race and the next a landslide), draws an electorate
+  of 800..4200, and reveals it along a seeded, strictly increasing curve with a
+  per-faction pace, so early counts can have a different leader than the result
+  while the last counted ballot lands exactly on the drawn shares. Stats: it is a
+  pure function of (slot, election index, time) - restart-stable, nothing to
+  persist. Your own ballot is added on top for the running election only, the
+  voter list is filled with stable generated handles, and `RV_VOTE_SIM=0` restores
+  the old static behaviour. `docs/voting.md` has the details.
+- The election's own vote and its 50-reputation reward are now **per election
+  instance**: the vote log records which cycle a ballot belongs to, so a new
+  election lets you vote (and earn) again while a change of mind inside one
+  election still pays nothing. `state_report.py` prints the bars, the election
+  index and how far through the cycle the count is.
+- `GetLastVoters_V1` sends your ballot under your **display name** (the panel
+  bolds "your" row by comparing it with the profile name; the internal player id
+  never matched).
+
 ## 0.1.2 - 2026-11-08
 
 Fixed (reported after the first live session: "I vote in the World Council,

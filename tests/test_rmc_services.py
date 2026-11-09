@@ -937,8 +937,12 @@ def main():
                 LAYOUT[VOTING + "::GetLastVoters_V1"])
             check("content: GetLastVoters lists that vote first (newest first)",
                   bool(voters) and voters[0][1] == 2, repr(voters[:3]))
-            check("content: ... cast by the session player",
-                  bool(voters) and voters[0][0] == "default", repr(voters[:3]))
+            # the entry carries the player's DISPLAY name, because the panel
+            # bolds "your" row by matching it against the profile name
+            player_name = senate.player("default").get("name")
+            check("content: ... cast by the session player, under their name",
+                  bool(voters) and voters[0][0] == player_name,
+                  (voters[:3], player_name))
             stats = decode_body(
                 call(VOTING, "GetVotingStats_V1", senate, b"\x01")[1],
                 LAYOUT[VOTING + "::GetVotingStats_V1"])

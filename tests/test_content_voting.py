@@ -704,8 +704,11 @@ def test_apply_vote():
 
     # the vote record is the shape rmc_services already writes
     for vote in state["votes"]:
-        eq(sorted(vote), ["choice", "id", "ts", "voter"], "vote record shape")
+        eq(sorted(vote), ["choice", "election", "id", "ts", "voter"],
+           "vote record shape")
         eq(vote["id"], 0, "vote record carries the election id")
+        eq(vote["election"], cv.election_index(0, NOW),
+           "and the election instance it belongs to")
         check(isinstance(vote["ts"], int) and vote["ts"] > 0, "vote ts is unix")
     eq(state["votes"][0]["ts"], int(NOW.replace(tzinfo=UTC).timestamp()),
        "vote ts derives from the UTC 'now' (naive datetimes are UTC)")
@@ -834,6 +837,100 @@ def test_vote_record_is_created():
     check(True, "the result still serialises with sorted keys")
 
 
+
+
+def test_simulated_election():
+    """The world outside: a drawn outcome, revealed over the election."""
+    print("\n-- test_simulated_election")
+    base = datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc)
+
+    slot = 0
+    index = cv.election_index(slot, NOW)
+    shares = cv.election_shares(slot, index)
+    eq(sorted(shares), sorted(cv.FACTIONS), "one share per faction")
+    check(abs(sum(shares.values()) - 1.0) < 1e-9, "the shares sum to 1")
+    check(all(v >= cv.SIM_MIN_SHARE for v in shares.values()),
+          "no faction is below the floor")
+    check(max(shares.values()) > 0.34 and min(shares.values()) < 0.34,
+          "the outcome is not a three-way tie")
+
+    # a different election draws a different outcome, the same one never drifts
+    other = cv.election_shares(slot, index + 1)
+    check(other != shares, "the next election has its own outcome")
+    eq(cv.election_shares(slot, index), shares, "an election's outcome is stable")
+
+    electorate = cv.election_electorate(slot, index)
+    low, high = cv.SIM_ELECTORATE
+    eq(low <= electorate <= high, True,
+       "the electorate is in range (%d)" % electorate)
+
+    # revealed over time: monotone, and exactly the outcome at the end
+    start, end, expire = cv.election_bounds(slot, NOW)
+    check(end > start and expire > end, "the window is start < end < expire")
+    previous = None
+    samples = 0
+    for hours in range(0, (end - start) * 24, 6):
+        when = base + datetime.timedelta(days=start, hours=hours)
+        counts = cv.simulated_votes(slot, when)
+        eq(sorted(counts), sorted(cv.FACTIONS), "three bars")
+        if previous is not None:
+            check(all(counts[f] >= previous[f] for f in cv.FACTIONS),
+                  "the count only grows (+%dh)" % hours)
+        check(sum(counts.values()) > 0, "a live election is never at zero")
+        previous = counts
+        samples += 1
+    eq(samples > 8, True, "sampled the whole window (%d samples)" % samples)
+
+    when = base + datetime.timedelta(days=end) - datetime.timedelta(seconds=1)
+    final = cv.simulated_votes(slot, when)
+    expect = {f: int(round(electorate * shares[f])) for f in cv.FACTIONS}
+    eq(final, expect, "the last counted ballot matches the drawn outcome")
+    eq(sum(final.values()), electorate, "every ballot of the electorate is counted")
+
+    # the player's own ballot is added on top, for the RUNNING election only
+    state = cv.default_state(NOW)
+    fresh = cv.served_counts(state, slot, NOW)
+    eq(fresh, cv.simulated_votes(slot, NOW), "no votes yet: the world's count")
+    cv.apply_vote(state, slot, cv.FACTION_TECH, voter="Player", now=NOW)
+    after = cv.served_counts(state, slot, NOW)
+    eq(after[cv.FACTION_TECH], fresh[cv.FACTION_TECH] + 1,
+       "the player's ballot adds exactly one to their faction")
+    eq(after[cv.FACTION_ECO], fresh[cv.FACTION_ECO], "and nothing to the others")
+
+    # the voter list: the player first, then plausible simulated ballots
+    voters = cv.served_voters(state, slot, 5, NOW)
+    eq(len(voters), 5, "the requested number of voters")
+    eq(voters[0]["voter"], "Player", "the real ballot is listed first")
+    check(all(isinstance(v["voter"], str) and v["voter"] for v in voters),
+          "every entry has a name")
+    check(len(set(v["voter"] for v in voters)) == len(voters),
+          "the names are distinct")
+    eq(cv.served_voters(state, slot, 0, NOW), [], "limit 0 is an empty list")
+
+    # the own vote belongs to ONE election: the next cycle lets you vote again
+    election = cv.elections_from_state(state, NOW, voter="Player")
+    eq(election[0]["f6"], cv.FACTION_TECH, "this election remembers the ballot")
+    later = base + datetime.timedelta(days=end + 1)
+    rolled = cv.elections_from_state(state, later, voter="Player")
+    eq(rolled[0]["f6"], cv.FACTION_INVALID,
+       "the next election starts unvoted (the panel lets you vote again)")
+    eq(cv.election_index(slot, later), cv.election_index(slot, NOW) + 1,
+       "... because the election instance advanced")
+
+    # RV_VOTE_SIM=0 keeps the old static behaviour for A/B runs
+    eq(cv.served_counts(state, slot, NOW, simulate=False),
+       {cv.FACTION_TECH: 1, cv.FACTION_ECO: 0, cv.FACTION_TYCOON: 0},
+       "simulation can be switched off (stored/tallied counts only)")
+
+    # ... and a ballot from an earlier election does not leak into this one
+    stale = json.loads(json.dumps(state))
+    stale["votes"][0]["election"] = cv.election_index(slot, NOW) - 1
+    eq(cv.served_counts(stale, slot, NOW), fresh,
+       "a ballot from the previous election is not counted again")
+    eq(cv.own_vote_from_votes(stale, slot, "Player", now=NOW), cv.FACTION_INVALID,
+       "nor does it make the new election look voted")
+
+
 def test_hygiene():
     print("\n-- test_hygiene")
     path = os.path.join(ROOT, "server", "content_voting.py")
@@ -872,7 +969,7 @@ def test_hygiene():
 def main():
     for fn in (test_packed_layout, test_roundtrip, test_default_election,
                test_wire_decode, test_apply_vote, test_vote_record_is_created,
-               test_hygiene):
+               test_simulated_election, test_hygiene):
         fn()
     print("\n%d checks, %d failed" % (CHECKS, len(FAILURES)))
     if FAILURES:
