@@ -1,12 +1,38 @@
 # Install, in detail
 
-## The easy way (recommended)
+## Which download?
+
+From the [latest release](../../releases/latest):
+
+| file | what it is |
+|---|---|
+| `Anno2070Online-playbat-vX.Y.Z.zip` | **the supported build** - extract into the game folder, double-click `PLAY.bat` |
+| `SHA256SUMS.txt` | the SHA256 of every file above |
+| `Anno2070Online-Setup.exe` | experimental: installs to `%LOCALAPPDATA%`, no Python needed, adds shortcuts. Its launcher has not been shown to behave like `PLAY.bat` |
+| `Anno2070Online-portable.zip` | the same runtime unpacked - unzip anywhere, run `Anno2070Online.exe` |
+| `Uninstall-Anno2070Online.exe` | removes the .exe build, keeps your online state in `%LOCALAPPDATA%\Anno2070Online-backup` |
+
+## The easy way (recommended): the PLAY.bat zip
+
+1. Extract the zip so you end up with
+   `...\Anno 2070\Anno2070Online\PLAY.bat` next to `Anno5.exe`
+   (extracting it anywhere else also works - `PLAY.bat` asks for the game folder).
+2. Install Python 3.8+ once, with *Add python.exe to PATH* ticked.
+3. Double-click `PLAY.bat`.
+
+Nothing is installed into Windows and no game file is modified: `INSTALL.bat`
+puts the loader DLL next to `Anno5.exe` (keeping the original as a backup), and
+`PLAY.bat` starts the local server once, then the game. `SELFTEST.bat` proves the
+whole thing works without starting the game, and `PROGRESS.bat` shows what was
+saved after a session.
+
+## The .exe build (experimental)
 
 Run **`Anno2070Online-Setup.exe`**. It asks for your player name (and for the
 game folder only if it cannot find it), then installs everything into
 `%LOCALAPPDATA%\Anno2070Online`, copies the loader next to `Anno5.exe`, and adds
-a Desktop + Start Menu shortcut. Start the game from that shortcut from then on.
-No Python is required.
+a Desktop + Start Menu shortcut. No Python is required - but the launcher has not
+been shown to behave like `PLAY.bat`, so treat it as experimental.
 
 ## The manual way (developers / troubleshooting)
 
