@@ -30,7 +30,11 @@ Added (staged, opt-in, not yet run in the game)
 Docs
 - `docs/known-issues.md` #10 rewritten: the real enable site, the corrected
   mechanism (widget state, not "no page"), why "continuous only" is not implemented
-  in this build, and the opt-in route above.
+  in this build, and the opt-in route above. It also documents what the four
+  `ARK_PATRON_ACTION` buttons *are* (the World Patron's sector favours - twelve
+  temporary buffs handed to other players as neutral-faction messages, four offered
+  at a time with per-button cooldowns), which corrects an earlier "plain item
+  activations" claim in the same file.
 
 ## 0.1.9 - 2026-11-09
 

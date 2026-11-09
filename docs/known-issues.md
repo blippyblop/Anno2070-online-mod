@@ -213,9 +213,45 @@ it says so in the log every launch.
 
 **Expect it to be largely empty:** the panel needs `m_WorldPatronGUID` and
 `m_SenateEffectGUID` (both 0 in a local world), so its Patron and Senate blocks
-render blank; only the four `ARK_PATRON_ACTION` buttons (ordinary Ark item
-activations) would do something. This is "make the tab open", not "make it
-meaningful" - the content needs the online world data that no longer exists.
+render blank. This is "make the tab open", not "make it meaningful" - the content
+needs world data that no longer exists.
+
+#### What the four `ARK_PATRON_ACTION` buttons actually are (checked, not assumed)
+
+They are the **World Patron's sector favours**, i.e. the political powers of the
+elected President of the World Council - not plain item activations (that earlier
+claim in this file was wrong). Evidence from the client's own data:
+
+* the panel's action text is a runtime substitution, `1000800`
+  "Available World Council actions: `[CURRENT_WORLDPATRON_ACTIONS]`", plus
+  `1000812` "President of the World Council: `[CURRENT_WORLDPATRON_NAME]`";
+* the layout has exactly four slots - `ARK_PATRON_ACTION1..4`, each with its own
+  cooldown widget (`ARK_WORLDPATRON_COOLDOWN1..4`) - and the runtime keys
+  `PatronActions`, `PatronSelected`, `WorldPatronActionsUsed`,
+  `WORLDPATRONACTION_USED`, `m_ExecutedThirdPartyActions` say the *use* is
+  recorded per world;
+* the twelve actions are written as third-party (neutral faction) messages in
+  `thirdpartydefault.xml`, GUIDs 5000834-5000856: market power (merchant fleets),
+  industrial power, emission trading (carbon credits), fleet maneuver,
+  negotiation skills (diplomacy), smart grids (energy), creative power, vigilance
+  week, individual tutoring (licence sale), robotic workforce (maintenance),
+  construction limits testing, research grant. Each is a **temporary buff handed to
+  another player** in the sector, phrased as that NPC acting on your behalf
+  ("`[THIRDPARTY_SENDER_PLAYER]` has passed a new Industrial law ...");
+* the Ark item side carries the effect: item texts 60645/60646 are "Additional
+  Effect for TechPatronAction03/04", and the string `WorldPatronItem` marks the
+  item representation.
+
+**So the intended loop is:** you win the World Council presidency (`f9` feeds the
+panel, `WorldPatronVotes` the vote) -> the tab offers you 4 of the 12 favours, each
+with a cooldown -> using one grants a named player in the same world a temporary
+buff, delivered as a neutral-faction message, and the use is counted per world.
+That is a multi-player, persistent-world feature: with no other players there is
+nobody to favour, and there is no server service left to record the use or supply
+the action list. A local imitation is possible - elect the player as patron, target
+the player themselves, keep a cooldown and the mails in `state.json` - but it is a
+self-granted buff (a cheat) and the effect-application path from the client's side
+is still unimplemented in this project.
 
 **Status:** the patch, the probe and a test that re-checks every RVA and expected
 byte against `Anno5.exe` (`tests/test_politics_patch.py`) are in the tree; the DLL
