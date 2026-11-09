@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.8 - 2026-11-09
+
+Added
+- **World events now have a feed of fictional players beating the missions, and
+  that feed *is* the world total.** Every campaign draws a target between
+  **100,000 and 125,000** points; `pool_stream()` builds a deterministic list of
+  completions (`Player<digits>`, missions 1/2/3 falling off 70/22/8, each worth
+  the mission's career value 50/150/300) spread over the 30 days with uneven
+  daily weights and an opening rush, shaped so the sum lands **exactly** on the
+  target at the end. The progress bar (`f6`/`f7`) is the sum of that feed up to
+  now, so the bar and the log can never disagree; `PROGRESS.bat` shows the
+  completion count and the newest entry. Nothing is stored - it is a pure
+  function of the campaign and the clock.
+- `RV_CAMPAIGN_PAYOUTS=0` disables the crossed-tier payout (used by the unit
+  tests so a single credit path can be asserted without a world bonus).
+
 ## 0.1.7 - 2026-11-09
 
 Corrected

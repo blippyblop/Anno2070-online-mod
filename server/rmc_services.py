@@ -2442,11 +2442,24 @@ def _pay_election_gifts(store, ctx=None):
     return paid
 
 
+def _campaign_payouts_on():
+    """Do crossed campaign tiers pay reputation?  ``RV_CAMPAIGN_PAYOUTS=0`` off.
+
+    Same idea as ``RV_ARK_REWARDS``: the tier payout is a *world* effect that
+    fires whenever the simulated total crosses a threshold, which makes it
+    awkward to unit-test a single credit path.  Tests turn it off and exercise it
+    separately.
+    """
+    return (os.environ.get("RV_CAMPAIGN_PAYOUTS") or "").strip().lower() not in (
+        "0", "off", "no", "false")
+
+
 def _campaign(store, now=None, ctx=None):
     """Refresh the campaign block, pay crossed tiers, return the summary."""
     we = _world_event_state(store)
     summary = content_events.campaign_sync(we, now)
-    _pay_campaign_tiers(store, we, summary, ctx)
+    if _campaign_payouts_on():
+        _pay_campaign_tiers(store, we, summary, ctx)
     return summary
 
 

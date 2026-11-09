@@ -170,8 +170,8 @@ def main():
     check("the running flag is 0 (0 == running)", f5 == 0, f5)
     check("the bar is the campaign: 0 < progress <= max",
           0 < f6 <= f7, (f6, f7))
-    check("the progress max is the 25,000..125,000 target",
-          25000 <= f7 <= 125000, f7)
+    check("the progress max is this campaign's drawn target (100,000..125,000)",
+          100000 <= f7 <= 125000, f7)
     year = (f4 >> 26) & 0x3FFF
     check("the packed date decodes to a sane year", 2020 <= year <= 2100, (f4, year))
 

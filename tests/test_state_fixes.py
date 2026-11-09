@@ -473,8 +473,8 @@ def test_campaign_month():
           (start_day - CE.campaign_anchor_day()) % 30 == 0, start_day)
 
     target = CE.campaign_target(index)
-    check("the global target is in the requested range 25,000..125,000",
-          25000 <= target <= 125000, target)
+    check("the global target is in the requested range 100,000..125,000",
+          100000 <= target <= 125000, target)
     check("the target is stable (same campaign, same number)",
           CE.campaign_target(index) == target, CE.campaign_target(index))
     check("a different campaign draws a different number",
@@ -490,6 +490,23 @@ def test_campaign_month():
     check("the first day already shows progress", totals[0] > 0, totals[0])
     check("the campaign ends exactly on the target", totals[-1] == target,
           (totals[-1], target))
+
+    # the total IS the fictional feed: same number, same story
+    stream = CE.pool_stream(index)
+    check("the feed's points add up to the target",
+          sum(e["points"] for e in stream) == target, len(stream))
+    by_mission = {m: sum(1 for e in stream if e["mission"] == m)
+                  for m in (1, 2, 3)}
+    check("most players beat mission 1, fewer 2, fewest 3",
+          by_mission[1] > by_mission[2] > by_mission[3] > 0, by_mission)
+    check("the feed names look like players",
+          all(str(e["name"]).startswith("Player") for e in stream[:20]),
+          [e["name"] for e in stream[:3]])
+    feed = CE.pool_feed(index, 5, base + timedelta(days=29))
+    check("the feed lists the newest completions first",
+          len(feed) <= 5 and all(feed[i]["day"] >= feed[i + 1]["day"]
+                                 for i in range(len(feed) - 1)),
+          [(e["day"], e["secs"]) for e in feed])
     check("the fill is gradual, not one jump at the end",
           len(set(totals)) >= 15, len(set(totals)))
     check("no single day is half the month",
@@ -833,6 +850,14 @@ def test_reputation_never_goes_backwards(tmp):
 def test_campaign_payout(tmp):
     """Crossing a campaign tier pays every player once, and only once."""
     print("a campaign tier pays its reputation once per campaign")
+    os.environ.pop("RV_CAMPAIGN_PAYOUTS", None)      # this test needs it ON
+    try:
+        _campaign_payout_body(tmp)
+    finally:
+        os.environ["RV_CAMPAIGN_PAYOUTS"] = "0"
+
+
+def _campaign_payout_body(tmp):
     store = R.open_store(os.path.join(tmp, "campaign.json"))
     summary = CE.campaign_state()
     chapter = summary["chapter"]
@@ -1146,6 +1171,10 @@ def test_career_credit_paths(tmp):
 
 
 def main():
+    # the campaign's tier payout is a world effect that fires whenever the
+    # simulated total crosses a threshold; it has its own test, and everywhere
+    # else it would add an unpredictable bonus to a credit-path assertion
+    os.environ["RV_CAMPAIGN_PAYOUTS"] = "0"
     tmp = tempfile.mkdtemp(prefix="anno-statefix-")
     try:
         test_qstr_terminator()

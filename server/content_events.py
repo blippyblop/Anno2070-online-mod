@@ -128,13 +128,26 @@ DAY_SECONDS = 86400
 #: of restarts, on any machine.
 CAMPAIGN_ANCHOR = _date(2026, 1, 1)
 
-#: How many points the *world* collects over one campaign.  The user-facing
-#: requirement is "random, from a range of 25,000 to 125,000" and it is honoured
-#: exactly: :func:`campaign_target` maps a seeded splitmix64 draw onto this
-#: inclusive range, so the number is arbitrary-looking yet identical for every
-#: player and every request within that campaign.
-CAMPAIGN_TARGET_MIN = 25000
+#: How many points the *world* collects over one campaign.  The requirement is
+#: "between 100,000 and 125,000 points, accumulated from fictional players
+#: beating the event's missions", and it is honoured exactly: the feed is a
+#: deterministic stream of completions whose points sum to
+#: :func:`campaign_target` by the last day.
+CAMPAIGN_TARGET_MIN = 100000
 CAMPAIGN_TARGET_MAX = 125000
+
+#: What one fictional completion is worth, per mission ordinal (1/2/3): the
+#: career value the shipped career table gives a global-event mission.  The pool
+#: is counted in these, so the feed and the bar are the same number.
+MISSION_POOL_POINTS = (50, 150, 300)
+
+#: How the fictional players fall off: most beat mission 1, some beat mission 2,
+#: a few of those beat mission 3 (relative weights, out of 100).
+POOL_FALLOFF = (70, 22, 8)
+
+#: The pool target is drawn in multiples of this (the smallest reward), so the
+#: accumulated feed can reach it exactly.
+POOL_TARGET_STEP = 50
 
 #: The campaign tier ladder, from ``assets.xml`` (``-MetaGame/Campaign``): four
 #: thresholds per chapter with one reputation reward each.  Chapter 1 ships
@@ -627,14 +640,145 @@ def campaign_chapter(index, chapters=None):
 
 
 def campaign_target(index):
-    """The global points total this campaign will collect, 25,000 .. 125,000.
+    """The global points total this campaign will collect, 100,000 .. 125,000.
 
-    Deterministic in ``index``: a seeded draw mapped onto the inclusive range,
-    so the number looks arbitrary but is the same everywhere, always.
+    Deterministic in ``index``: a seeded draw mapped onto the inclusive range in
+    steps of :data:`POOL_TARGET_STEP` (the smallest mission reward), so the
+    fictional feed can land on it exactly.
     """
-    span = CAMPAIGN_TARGET_MAX - CAMPAIGN_TARGET_MIN + 1
+    low = CAMPAIGN_TARGET_MIN // POOL_TARGET_STEP
+    high = CAMPAIGN_TARGET_MAX // POOL_TARGET_STEP
     seed = splitmix64(_CAMPAIGN_SALT ^ (int(index) * _SPLITMIX_GOLDEN))
-    return CAMPAIGN_TARGET_MIN + seed % span
+    return (low + seed % (high - low + 1)) * POOL_TARGET_STEP
+
+
+def _pool_draw(index, count):
+    """The mission ordinal for each of ``count`` fictional completions.
+
+    Seeded per campaign, so the same campaign always has the same feed, and
+    weighted by :data:`POOL_FALLOFF` (most players stop after mission 1).
+    """
+    base = splitmix64(_CAMPAIGN_SALT ^ 0xF00D ^ (int(index) * 0x2545F491))
+    total = sum(POOL_FALLOFF)
+    picks = []
+    for i in range(count):
+        draw = splitmix64(base + i) % total
+        running = 0
+        for ordinal, weight in enumerate(POOL_FALLOFF):
+            running += weight
+            if draw < running:
+                picks.append(ordinal)
+                break
+        else:                                        # pragma: no cover
+            picks.append(0)
+    return picks
+
+
+def _pool_points(ordinal):
+    """Points a completion of mission ``ordinal`` (0-based) adds to the pool."""
+    try:
+        return int(MISSION_POOL_POINTS[int(ordinal)])
+    except (IndexError, TypeError, ValueError):
+        return int(MISSION_POOL_POINTS[0])
+
+
+def pool_stream(index):
+    """The campaign's fictional completions, oldest first.
+
+    Each entry is ``{"day", "secs", "mission", "points", "name"}``: ``mission``
+    is 1/2/3, ``points`` what it adds to the world total, ``day`` the campaign
+    day (0-based) and ``secs`` the second of that day.  The list is built so its
+    points add up to :func:`campaign_target` **exactly**, and it is a pure
+    function of the campaign index - nothing is stored.
+    """
+    index = int(index)
+    target = campaign_target(index)
+    mean = float(sum(w * p for w, p in zip(POOL_FALLOFF, MISSION_POOL_POINTS)))         / float(sum(POOL_FALLOFF))
+    count = max(1, int(round(target / max(1.0, mean))))
+    picks = _pool_draw(index, count)
+    points = [_pool_points(p) for p in picks]
+    total = sum(points)
+    # land exactly on the target by adding/removing mission-1 completions
+    # (their reward is the step, so the remainder is always reachable)
+    if total < target:
+        extra = (target - total) // POOL_TARGET_STEP
+        picks.extend([0] * extra)
+        points.extend([_pool_points(0)] * extra)
+    elif total > target:
+        remaining = total - target
+        for i in range(len(picks) - 1, -1, -1):
+            if remaining < POOL_TARGET_STEP:
+                break
+            if picks[i] == 0:
+                remaining -= _pool_points(0)
+                picks[i] = None
+                points[i] = 0
+        picks = [p for p in picks if p is not None]
+        points = [p for p in points if p]
+    # spread them over the campaign days with the campaign's own uneven shape
+    weights = list(campaign_weights(index))
+    # an event opens with a rush: never let the first day be an empty page
+    weights[0] = max(weights[0], max(weights) // 2)
+    total_weight = float(sum(weights)) or 1.0
+    order = sorted(range(len(picks)),
+                   key=lambda i: splitmix64(_CAMPAIGN_SALT ^ 0xBEE5 ^
+                                            index * 31 + i))
+    stream = []
+    position = 0
+    for day, weight in enumerate(weights):
+        share = int(round(len(picks) * weight / total_weight))
+        for _ in range(share):
+            if position >= len(order):
+                break
+            i = order[position]
+            position += 1
+            seed = splitmix64(_CAMPAIGN_SALT ^ 0xC0DE ^ (index * 131) + i)
+            stream.append({
+                "day": day,
+                "secs": seed % 86400,
+                "mission": picks[i] + 1,
+                "points": points[i],
+                "name": "Player%d" % (100000 + (seed >> 7) % 900000),
+            })
+    # anything left over (rounding) goes on the last day
+    while position < len(order):
+        i = order[position]
+        position += 1
+        stream.append({"day": len(weights) - 1, "secs": 0,
+                       "mission": picks[i] + 1, "points": points[i],
+                       "name": "Player%d" % (100000 + i)})
+    stream.sort(key=lambda e: (e["day"], e["secs"]))
+    return stream
+
+
+def pool_points_at(index, now=None):
+    """Points the world has collected so far this campaign (the feed's sum)."""
+    start, _end = campaign_bounds(index)
+    day = day_ordinal(now) - start
+    base = _now_datetime(now)
+    secs = base.hour * 3600 + base.minute * 60 + base.second
+    total = 0
+    for entry in pool_stream(index):
+        if entry["day"] < day or (entry["day"] == day and entry["secs"] <= secs):
+            total += entry["points"]
+        elif entry["day"] > day:
+            break
+    return total
+
+
+def pool_feed(index, limit=12, now=None):
+    """The newest fictional completions, newest first (for the log/report)."""
+    start, _end = campaign_bounds(index)
+    day = day_ordinal(now) - start
+    base = _now_datetime(now)
+    secs = base.hour * 3600 + base.minute * 60 + base.second
+    seen = [entry for entry in pool_stream(index)
+            if entry["day"] < day or (entry["day"] == day and entry["secs"] <= secs)]
+    try:
+        limit = max(0, int(limit))
+    except (TypeError, ValueError):
+        limit = 12
+    return list(reversed(seen))[:limit]
 
 
 def campaign_weights(index):
@@ -652,12 +796,18 @@ def campaign_weights(index):
 def campaign_total(index, now=None, weights=None):
     """Points the world has collected so far in campaign ``index``.
 
+    Since 0.1.8 this is the **sum of the fictional feed** (fictional players
+    beating the event's missions), not a separate curve: the bar and the log are
+    the same number, and the last day lands exactly on :func:`campaign_target`.
+
     Day 1 of the campaign already shows one day's worth (the world does not
     start at zero on a live campaign), the last day reaches the target exactly,
     and the sequence never goes backwards.  Because it is a pure function of
     ``(index, day)``, a restart cannot change it: no accumulator, no drift.
     """
-    weights = weights or campaign_weights(index)
+    if weights is None:
+        return pool_points_at(index, now)
+    # an explicit weight table keeps the old synthetic curve (tests only)
     start, _end = campaign_bounds(index)
     elapsed = day_ordinal(now) - start + 1
     if elapsed <= 0:
@@ -701,6 +851,8 @@ def campaign_state(now=None, chapters=None):
     days = min(max(1, day_ordinal(now) - start + 1), CAMPAIGN_DAYS)
     tiers = campaign_tiers(chapter)
     reached = campaign_tier_reached(chapter, total)
+    feed = pool_feed(index, 1, now)
+    last = feed[0] if feed else None
     return {
         "index": int(index),
         "start": int(start),
@@ -712,6 +864,12 @@ def campaign_state(now=None, chapters=None):
         "tiers": list(tiers),
         "tiersReached": int(reached),
         "tierRewards": [int(r) for r in CAMPAIGN_TIER_REWARDS[:reached]],
+        # the fictional feed that *is* the total: how many completions so far,
+        # and the newest one, so the report/log can show the same story
+        "feedCount": int(len(pool_stream(index))),
+        "lastBeaten": (None if last is None else
+                       {"name": last["name"], "mission": int(last["mission"]),
+                        "points": int(last["points"])}),
     }
 
 

@@ -31,16 +31,23 @@ as a month of "worldside progress". That is now simulated exactly as asked:
   `anchor + n*30` and the whole simulation is reproducible on any machine, at
   any time, after any restart. The five chapters rotate per campaign
   (`chapters[index % 5]`), so a chapter is up for a month.
-* **Every campaign draws a global target in 25,000 .. 125,000 points** - a
-  seeded splitmix64 draw mapped onto that inclusive range
-  (`content_events.campaign_target`). Same campaign => same number, for every
-  player and every request.
-* **The target fills gradually, day by day.** Each of the 30 days has its own
-  seeded weight (1..1000), and the progress on day *k* is
-  `target * sum(weights[:k]) / sum(weights)`. Consequences: monotone, uneven
-  (a quiet day, a busy week), already non-zero on day 1, and **exactly** the
-  target on the last day. Because it is a pure function of the date, a restart
-  cannot change it and nothing has to be accumulated.
+* **Every campaign draws a global target in 100,000 .. 125,000 points** - a
+  seeded splitmix64 draw, rounded to a multiple of 50 (the smallest mission
+  reward) so the feed can land on it exactly (`content_events.campaign_target`).
+  Same campaign => same number, for every player and every request.
+* **The total is a feed of fictional players beating the event's missions.**
+  `pool_stream()` builds the campaign's completions deterministically: names are
+  `Player<digits>`, and the missions fall off (`POOL_FALLOFF` = 70/22/8, so most
+  players stop after mission 1, some finish 2, a few finish 3). Each completion
+  adds the mission's career value (50/150/300) to the world total, and the list
+  is shaped so the sum is **exactly** the drawn target on the last day. The
+  completions are spread over the 30 days with the campaign's own uneven weights
+  (a quiet day, a busy weekend) and an opening-day rush, so the bar rises in
+  believable steps. `pool_points_at()` is the sum up to now, `pool_feed()` the
+  newest entries - the bar and the log are the same number.
+* Because everything is a pure function of `(campaign index, time)`, a restart
+  mid-event shows exactly the same feed and the same total: nothing to
+  accumulate, nothing to drift.
 * **The wire carries it**: f6 = points collected so far, f7 = the campaign
   target, f4 = the campaign's last day (packed date). `worldEvent.campaign`
   stores the same numbers in the save so `PROGRESS.bat`/`state_report.py` can

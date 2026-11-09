@@ -118,6 +118,19 @@ def main():
         check("the worldside progress is filling over the month",
               0 < campaign["total"] <= campaign["target"],
               (campaign["total"], campaign["target"]))
+        feed = CE.pool_feed(campaign["index"], 3)
+        check("the event feed lists fictional players beating missions",
+              bool(feed) and all(str(e["name"]).startswith("Player")
+                                 and e["mission"] in (1, 2, 3) for e in feed),
+              feed)
+        stream = CE.pool_stream(campaign["index"])
+        check("... and the whole feed adds up to the drawn target",
+              sum(e["points"] for e in stream) == campaign["target"],
+              (sum(e["points"] for e in stream), campaign["target"]))
+        by_mission = {m: sum(1 for e in stream if e["mission"] == m)
+                      for m in (1, 2, 3)}
+        check("the feed falls off across the three missions",
+              by_mission[1] > by_mission[2] > by_mission[3] > 0, by_mission)
         check("the state file records the campaign", bool(we.get("campaign")),
               we.get("campaign"))
         print("        day %d/30 of campaign %s: %d of %d points, %d/%d tiers"

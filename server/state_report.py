@@ -143,6 +143,15 @@ def event_lines(state):
         reached = int(campaign.get("tiersReached") or 0)
         lines.append("    worldside progress: %d of %d points  (%d%%, day %s of 30)"
                      % (total, target, percent, campaign.get("days", "?")))
+        feed = campaign.get("feedCount")
+        last = campaign.get("lastBeaten")
+        if feed:
+            lines.append("    event feed       : %d fictional completions%s"
+                         % (feed,
+                            "" if not last else
+                            ", newest: %s beat mission %s (+%d)"
+                            % (last.get("name"), last.get("mission"),
+                               last.get("points"))))
         if tiers:
             lines.append("    campaign tiers   : %d of %d crossed %s"
                          % (reached, len(tiers),
