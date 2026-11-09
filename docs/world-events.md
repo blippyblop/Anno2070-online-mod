@@ -33,18 +33,41 @@ as a month of "worldside progress". That is now simulated exactly as asked:
   (`chapters[index % 5]`), so a chapter is up for a month.
 * **Every campaign draws a global target in 100,000 .. 125,000 points** - a
   seeded splitmix64 draw, rounded to a multiple of 50 (the smallest mission
-  reward) so the feed can land on it exactly (`content_events.campaign_target`).
-  Same campaign => same number, for every player and every request.
+  reward) (`content_events.campaign_target`). Same campaign => same number, for
+  every player and every request.
+* **The target is an *aim*, not a promise.** The fiction is allowed to overshoot
+  or undershoot it: `pool_stream()` draws the number of completions with a
+  seeded +/-8% spread, so a month typically closes around 100-110% of the drawn
+  target (an audited sample: target 113,000, feed 118,000 = 104%). Nobody
+  notices a month that ends at 118k instead of 113k, and chasing an exact total
+  forced an unnatural last-day lump.
 * **The total is a feed of fictional players beating the event's missions.**
   `pool_stream()` builds the campaign's completions deterministically: names are
   `Player<digits>`, and the missions fall off (`POOL_FALLOFF` = 70/22/8, so most
   players stop after mission 1, some finish 2, a few finish 3). Each completion
-  adds the mission's career value (50/150/300) to the world total, and the list
-  is shaped so the sum is **exactly** the drawn target on the last day. The
-  completions are spread over the 30 days with the campaign's own uneven weights
-  (a quiet day, a busy weekend) and an opening-day rush, so the bar rises in
-  believable steps. `pool_points_at()` is the sum up to now, `pool_feed()` the
-  newest entries - the bar and the log are the same number.
+  adds the mission's career value (50/150/300) to the world total.
+* **The rate varies**, which is what makes the bar interesting to watch. Three
+  mechanisms, all seeded so a restart replays the same month:
+  - per-day weights (`campaign_weights`, 1..1000) give quiet days and busy days;
+  - a **ramp** (`0.6 -> 1.4` across the month) starts the campaign slowly and
+    ends it with momentum, like a real community event;
+  - three **surge days** get 1.8x-2.4x their weight - the "the whole server is
+    playing tonight" spikes.
+  Measured on campaign 10: daily additions from 300 to 15,850 points (the
+  biggest single day is ~13% of the month), first week
+  `[1750, 4400, 1600, 1450, 4550, 4450, 650]`. Every day still adds at least one
+  completion, so the bar never stalls.
+* **Your own completions join the same feed and the same pool.**
+  `own_contributions()` turns this world's `worldEvent.completedMissions` into
+  feed entries flagged `own: True`, valued at the mission's *career* value
+  (`rep` = 50/150/300, not the 1/5/10 event-progress points). They are summed
+  into the total, so the bar visibly jumps when you solve a mission (+150 for a
+  mission-2 solve was verified end to end), and they are listed **first** in
+  `pool_feed()` (newest of your own work on top, then the fiction), so
+  `state_report.py` shows `Player beat mission 2 (+150)`. They count only inside
+  the current campaign and only up to *now*.
+* `pool_points_at()` is the sum up to now, `pool_feed()` the newest entries - the
+  bar and the log are the same number.
 * Because everything is a pure function of `(campaign index, time)`, a restart
   mid-event shows exactly the same feed and the same total: nothing to
   accumulate, nothing to drift.

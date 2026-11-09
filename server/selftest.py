@@ -115,8 +115,9 @@ def main():
               campaign["end"] - campaign["start"] == 30, campaign)
         check("its global target is in the 25,000..125,000 range",
               25000 <= campaign["target"] <= 125000, campaign["target"])
+        # an aim, not a promise: late in a month the fiction can overshoot
         check("the worldside progress is filling over the month",
-              0 < campaign["total"] <= campaign["target"],
+              0 < campaign["total"] <= campaign["target"] * 1.15,
               (campaign["total"], campaign["target"]))
         feed = CE.pool_feed(campaign["index"], 3)
         check("the event feed lists fictional players beating missions",
@@ -124,9 +125,11 @@ def main():
                                  and e["mission"] in (1, 2, 3) for e in feed),
               feed)
         stream = CE.pool_stream(campaign["index"])
-        check("... and the whole feed adds up to the drawn target",
-              sum(e["points"] for e in stream) == campaign["target"],
-              (sum(e["points"] for e in stream), campaign["target"]))
+        feed_total = sum(e["points"] for e in stream)
+        # fuzzy on purpose: the fiction lands near the drawn target, not on it
+        check("... and the whole feed is worth about the drawn target (+/-10%)",
+              abs(feed_total - campaign["target"]) <= campaign["target"] * 0.10,
+              (feed_total, campaign["target"]))
         by_mission = {m: sum(1 for e in stream if e["mission"] == m)
                       for m in (1, 2, 3)}
         check("the feed falls off across the three missions",
@@ -169,6 +172,24 @@ def main():
         check("the progress mail arrived",
               int(CE.chapter_mail(chapter, "progress") or 0) in mails, sorted(mails))
         print("        mission %s -> +%d reputation" % (mission, info["reputation"]))
+
+        print("\n[3b] the player's own work counts in the world pool")
+        we = store.state.get("worldEvent") or {}
+        own = CE.own_contributions(we)
+        check("solving the mission produced one own feed entry",
+              len(own) == 1 and own[0]["own"] is True
+              and own[0]["points"] == info["reputation"], own)
+        live = CE.campaign_state(own=own)
+        plain = CE.campaign_state()
+        check("... and it is added to the worldside total",
+              live["total"] - plain["total"] == info["reputation"],
+              (live["total"], plain["total"]))
+        check("... and it heads the feed",
+              CE.pool_feed(live["index"], 3, own=own)[0].get("own") is True,
+              CE.pool_feed(live["index"], 3, own=own)[0])
+        print("        +%d of the %d points so far (%d of %d completions are yours)"
+              % (live["ownPoints"], live["total"], live["ownCount"],
+                 live["feedCount"]))
 
         print("\n[4] reading it all back the way the client does")
         box = count_of(call(store, PROFILE, "GetArkItems_V1"))

@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.1.9 - 2026-11-09
+
+Changed
+- **The campaign target is now fuzzy on purpose.** 0.1.8 shaped the fictional
+  feed so its sum landed *exactly* on the drawn 100,000..125,000 target, which
+  cost a large artificial lump on the last day. The count is now drawn with a
+  seeded +/-8% spread, so a month closes near the target (typically 100-110%;
+  campaign 10 draws 113,000 and its feed is worth 118,000) and the daily numbers
+  stay natural. `selftest`/tests assert +/-10% instead of equality.
+- **The build rate now varies over the month.** On top of the per-day weights
+  (1..1000, quiet days and busy days) the stream gets a ramp
+  (`0.6 -> 1.4`, slow start, strong finish) and three seeded **surge days** at
+  1.8x-2.4x weight. Measured: daily additions 300..15,850 points, biggest day
+  ~13% of the month, every day still adds at least one completion.
+
+Added
+- **Your own mission completions now count in the pool and appear in the feed.**
+  `own_contributions()` reads this world's `worldEvent.completedMissions`, values
+  each at the mission's career value (`rep` = 50/150/300, not the 1/5/10
+  event-progress points), adds them to the campaign total and lists them first
+  in `pool_feed()` (flagged `own`). Solving a mission-2 mission was verified to
+  add exactly +150 to the bar and to appear as `Player beat mission 2 (+150)`.
+  `worldEvent.campaign` now also carries `ownCount`/`ownPoints`/`lastBeaten`.
+  `PROGRESS.bat`/`state_report.py` prints
+  `event feed: N completions so far (391 fictional, 1 yours), newest: Player beat
+  mission 1 (+50) <- you` and `your contribution: +50 of the 35,950 points`, and
+  recomputes the campaign for *now* instead of trusting the last saved block
+  (`feedCount` now means "so far", not "the whole month").
+
 ## 0.1.8 - 2026-11-09
 
 Added

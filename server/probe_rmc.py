@@ -8,7 +8,7 @@ asks a *running* server the same questions the client asks, with the same frames
   * a World Council vote (id 1001) is counted on the council's bars and not the
     senate's,
   * the vote credited the career map's faction,
-  * the world event carries the month-long campaign (0 < progress <= target,
+  * the world event carries the month-long campaign (0 < progress <= 1.15*target,
     target in 25,000..125,000) and a packed date that decodes to a real year.
 
 Usage (the server must already be running):
@@ -168,8 +168,9 @@ def main():
     check("the event names a real chapter",
           f2 in (3054018, 3054105, 3058000, 3060000, 3062000), f2)
     check("the running flag is 0 (0 == running)", f5 == 0, f5)
-    check("the bar is the campaign: 0 < progress <= max",
-          0 < f6 <= f7, (f6, f7))
+    # the fiction may overshoot its drawn aim by a few percent (fuzzy by design)
+    check("the bar is the campaign: 0 < progress <= 115% of max",
+          0 < f6 <= f7 * 1.15, (f6, f7))
     check("the progress max is this campaign's drawn target (100,000..125,000)",
           100000 <= f7 <= 125000, f7)
     year = (f4 >> 26) & 0x3FFF

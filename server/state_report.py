@@ -29,6 +29,11 @@ try:                                    # the election simulation lives there
 except Exception:                       # noqa: BLE001 - report must never crash
     CONTENT_VOTING = None
 
+try:                                    # the campaign simulation lives there
+    import content_events as CONTENT_EVENTS
+except Exception:                       # noqa: BLE001 - report must never crash
+    CONTENT_EVENTS = None
+
 CHAPTER_TITLES = {
     3054018: "Atomic Terror",
     3054105: "The Eden Project",
@@ -117,6 +122,24 @@ def vote_lines(state):
     return lines
 
 
+def _live_campaign(we):
+    """The campaign recomputed for *right now* (pure), or None if unavailable.
+
+    The save only holds the numbers as of the last request, so a report run
+    after a long pause would show a stale bar/day.  ``campaign_state`` is a pure
+    function of the clock, so recomputing it here costs nothing and cannot
+    disagree with what the server will answer next; the player's own
+    completions are included so their contribution is visible.
+    """
+    if CONTENT_EVENTS is None or not isinstance(we, dict):
+        return None
+    try:
+        own = CONTENT_EVENTS.own_contributions(we)
+        return CONTENT_EVENTS.campaign_state(own=own)
+    except Exception:                   # noqa: BLE001 - the report never crashes
+        return None
+
+
 def event_lines(state):
     we = state.get("worldEvent")
     if not isinstance(we, dict):
@@ -135,6 +158,9 @@ def event_lines(state):
              "    missions solved  : %d %s" % (len(solved),
                                               "(%s)" % ", ".join(map(str, solved)) if solved else "")]
     campaign = we.get("campaign")
+    live = _live_campaign(we)
+    if live:
+        campaign = live
     if isinstance(campaign, dict):
         total = int(campaign.get("total") or 0)
         target = int(campaign.get("target") or 1)
@@ -145,13 +171,22 @@ def event_lines(state):
                      % (total, target, percent, campaign.get("days", "?")))
         feed = campaign.get("feedCount")
         last = campaign.get("lastBeaten")
+        fiction = fire = 0
         if feed:
-            lines.append("    event feed       : %d fictional completions%s"
-                         % (feed,
+            own_count = int(campaign.get("ownCount") or 0)
+            fire = max(0, int(feed) - own_count)
+            lines.append("    event feed       : %d completions so far (%d fictional, %d yours)%s"
+                         % (feed, fire, own_count,
                             "" if not last else
-                            ", newest: %s beat mission %s (+%d)"
+                            ", newest: %s beat mission %s (+%d)%s"
                             % (last.get("name"), last.get("mission"),
-                               last.get("points"))))
+                               last.get("points"),
+                               " <- you" if last.get("own") else "")))
+        if campaign.get("ownCount"):
+            lines.append("    your contribution: +%d of the %s points  (%s)"
+                         % (int(campaign.get("ownPoints") or 0),
+                            campaign.get("total"),
+                            "counted in the bar and the feed"))
         if tiers:
             lines.append("    campaign tiers   : %d of %d crossed %s"
                          % (reached, len(tiers),

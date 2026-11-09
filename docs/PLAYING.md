@@ -58,8 +58,15 @@ event - so "did the fix work" is answerable without starting Anno. It prints
 
 A campaign lasts 30 UTC days and hosts one of the five real chapters. Over those
 days the "worldside progress" bar fills up: every campaign draws a global target
-between **25,000 and 125,000 points** and the number climbs a little each day
-(the pace is uneven on purpose, and the last day lands exactly on the target).
+between **25,000 and 125,000 points** and the number climbs a little each day.
+The pace is uneven on purpose (quiet days, busy days, a slow start and a strong
+finish, and the occasional surge night), and the month closes *near* the target
+rather than exactly on it - it is fiction, not an accountant's ledger.
+The bar is a **feed of players beating the event's missions**: most beat the
+first mission, some the second, a few the third. Your own solved missions join
+that same feed and that same total (+50/+150/+300 for missions 1/2/3), so the
+bar visibly jumps when you finish one, and `PROGRESS.bat` lists your entry as
+`Player beat mission 2 (+150) <- you` with `your contribution: +N of the M points`.
 When the world crosses one of the chapter's four tier thresholds, **every player
 gets that tier's reputation** - once, ever, per campaign. Nothing to do but
 play; `PROGRESS.bat` shows `worldside progress: … of … points (day n of 30)`.

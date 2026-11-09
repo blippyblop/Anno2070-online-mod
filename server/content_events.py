@@ -694,31 +694,29 @@ def pool_stream(index):
     index = int(index)
     target = campaign_target(index)
     mean = float(sum(w * p for w, p in zip(POOL_FALLOFF, MISSION_POOL_POINTS)))         / float(sum(POOL_FALLOFF))
-    count = max(1, int(round(target / max(1.0, mean))))
+    # how many completions the world sees: drawn around the target's worth of
+    # ballots, +-8 %, so the campaign lands NEAR its target, not on the number -
+    # a real event total is fuzzy and the feed only has to add up to something
+    # convincing
+    spread = splitmix64(_CAMPAIGN_SALT ^ 0x5717 ^ (index * 7919)) % 17 - 8
+    count = max(1, int(round(target / max(1.0, mean) * (1.0 + spread / 100.0))))
     picks = _pool_draw(index, count)
     points = [_pool_points(p) for p in picks]
-    total = sum(points)
-    # land exactly on the target by adding/removing mission-1 completions
-    # (their reward is the step, so the remainder is always reachable)
-    if total < target:
-        extra = (target - total) // POOL_TARGET_STEP
-        picks.extend([0] * extra)
-        points.extend([_pool_points(0)] * extra)
-    elif total > target:
-        remaining = total - target
-        for i in range(len(picks) - 1, -1, -1):
-            if remaining < POOL_TARGET_STEP:
-                break
-            if picks[i] == 0:
-                remaining -= _pool_points(0)
-                picks[i] = None
-                points[i] = 0
-        picks = [p for p in picks if p is not None]
-        points = [p for p in points if p]
     # spread them over the campaign days with the campaign's own uneven shape
     weights = list(campaign_weights(index))
     # an event opens with a rush: never let the first day be an empty page
     weights[0] = max(weights[0], max(weights) // 2)
+    # and the RATE varies over the month: a ramp towards the deadline plus two
+    # or three surge days (a popular mission, a weekend) - so the bar moves in
+    # believable fits and starts instead of a smooth line
+    days = len(weights)
+    ramp = [0.6 + 0.8 * (day / float(max(1, days - 1))) for day in range(days)]
+    surge_base = splitmix64(_CAMPAIGN_SALT ^ 0x5A17 ^ (index * 13))
+    for _ in range(3):
+        surge_base = splitmix64(surge_base)
+        weights[surge_base % days] = int(weights[surge_base % days]
+                                         * (1.8 + (surge_base >> 17) % 7 / 10.0))
+    weights = [max(1, int(w * r)) for w, r in zip(weights, ramp)]
     total_weight = float(sum(weights)) or 1.0
     order = sorted(range(len(picks)),
                    key=lambda i: splitmix64(_CAMPAIGN_SALT ^ 0xBEE5 ^
@@ -751,34 +749,81 @@ def pool_stream(index):
     return stream
 
 
-def pool_points_at(index, now=None):
-    """Points the world has collected so far this campaign (the feed's sum)."""
+def own_contributions(state):
+    """The REAL completions of this world, as feed entries.
+
+    ``worldEvent.completedMissions`` holds every mission any player here has
+    solved, with ``ts``, the mission's ``points`` and the player's name, so the
+    player's own work can join the same feed and the same total as the
+    fiction - it is their world, their points count.
+    """
+    records = state.get("completedMissions") if isinstance(state, dict) else None
+    out = []
+    for record in records if isinstance(records, list) else ():
+        if not isinstance(record, dict):
+            continue
+        try:
+            ts = int(record.get("ts") or 0)
+        except (TypeError, ValueError):
+            ts = 0
+        info = mission_info(record.get("id"))
+        # the pool is counted in the missions' CAREER value (the fictional feed
+        # uses 50/150/300), not the 1/5/10 event-progress points
+        points = _int(record.get("rep"), info["reputation"])
+        out.append({
+            "ts": ts,
+            "day": None,
+            "secs": None,
+            "mission": int(info.get("index", 0)) + 1,
+            "points": _int(points, 0),
+            "name": _text(record.get("a"), "Player"),
+            "own": True,
+        })
+    return out
+
+
+def pool_so_far(index, now=None):
+    """The fictional completions that have already happened (oldest first)."""
     start, _end = campaign_bounds(index)
     day = day_ordinal(now) - start
     base = _now_datetime(now)
     secs = base.hour * 3600 + base.minute * 60 + base.second
-    total = 0
-    for entry in pool_stream(index):
-        if entry["day"] < day or (entry["day"] == day and entry["secs"] <= secs):
-            total += entry["points"]
-        elif entry["day"] > day:
-            break
+    return [entry for entry in pool_stream(index)
+            if entry["day"] < day or (entry["day"] == day
+                                      and entry["secs"] <= secs)]
+
+
+def pool_points_at(index, now=None, own=None):
+    """Points the world has collected so far this campaign (the feed's sum)."""
+    start, _end = campaign_bounds(index)
+    total = sum(entry["points"] for entry in pool_so_far(index, now))
+    if own:
+        start_ts = start * DAY_SECONDS
+        stamp = _now_datetime(now).timestamp()
+        for entry in own:
+            # only a completion inside THIS campaign counts towards its total
+            if start_ts <= _int(entry.get("ts"), 0) <= stamp:
+                total += _int(entry.get("points"), 0)
     return total
 
 
-def pool_feed(index, limit=12, now=None):
+def pool_feed(index, limit=12, now=None, own=None):
     """The newest fictional completions, newest first (for the log/report)."""
     start, _end = campaign_bounds(index)
-    day = day_ordinal(now) - start
-    base = _now_datetime(now)
-    secs = base.hour * 3600 + base.minute * 60 + base.second
-    seen = [entry for entry in pool_stream(index)
-            if entry["day"] < day or (entry["day"] == day and entry["secs"] <= secs)]
+    seen = pool_so_far(index, now)
     try:
         limit = max(0, int(limit))
     except (TypeError, ValueError):
         limit = 12
-    return list(reversed(seen))[:limit]
+    merged = list(reversed(seen))
+    if own:
+        start_ts = start * DAY_SECONDS
+        stamp = _now_datetime(now).timestamp()
+        mine = [entry for entry in own
+                if start_ts <= _int(entry.get("ts"), 0) <= stamp]
+        merged = mine + merged               # the player's own work comes first
+        merged.sort(key=lambda e: _int(e.get("ts"), 0), reverse=True)
+    return merged[:limit]
 
 
 def campaign_weights(index):
@@ -793,20 +838,22 @@ def campaign_weights(index):
     return tuple(1 + splitmix64(base + day) % 1000 for day in range(CAMPAIGN_DAYS))
 
 
-def campaign_total(index, now=None, weights=None):
+def campaign_total(index, now=None, weights=None, own=None):
     """Points the world has collected so far in campaign ``index``.
 
     Since 0.1.8 this is the **sum of the fictional feed** (fictional players
-    beating the event's missions), not a separate curve: the bar and the log are
-    the same number, and the last day lands exactly on :func:`campaign_target`.
+    beating the event's missions) plus this world's own completions, not a
+    separate curve: the bar and the log are the same number.  Since 0.1.9 the
+    feed aims at :func:`campaign_target` rather than landing on it exactly.
 
     Day 1 of the campaign already shows one day's worth (the world does not
-    start at zero on a live campaign), the last day reaches the target exactly,
-    and the sequence never goes backwards.  Because it is a pure function of
+    start at zero on a live campaign), the month closes *near* the target (the
+    feed is allowed to overshoot or undershoot by a few percent), and the
+    sequence never goes backwards.  Because it is a pure function of
     ``(index, day)``, a restart cannot change it: no accumulator, no drift.
     """
     if weights is None:
-        return pool_points_at(index, now)
+        return pool_points_at(index, now, own=own)
     # an explicit weight table keeps the old synthetic curve (tests only)
     start, _end = campaign_bounds(index)
     elapsed = day_ordinal(now) - start + 1
@@ -835,7 +882,7 @@ def campaign_tier_reached(chapter, total):
     return count
 
 
-def campaign_state(now=None, chapters=None):
+def campaign_state(now=None, chapters=None, own=None):
     """Everything the campaign needs, as a JSON-safe dict (no side effects).
 
     Keys: ``index``/``start``/``end`` (day ordinals), ``chapter``, ``target``,
@@ -847,12 +894,13 @@ def campaign_state(now=None, chapters=None):
     start, end = campaign_bounds(index)
     chapter = campaign_chapter(index, chapters)
     target = campaign_target(index)
-    total = campaign_total(index, now)
+    total = campaign_total(index, now, own=own)
     days = min(max(1, day_ordinal(now) - start + 1), CAMPAIGN_DAYS)
     tiers = campaign_tiers(chapter)
     reached = campaign_tier_reached(chapter, total)
-    feed = pool_feed(index, 1, now)
+    feed = pool_feed(index, 1, now, own=own)
     last = feed[0] if feed else None
+    mine = [entry for entry in (own or ()) if entry.get("own")]
     return {
         "index": int(index),
         "start": int(start),
@@ -866,14 +914,17 @@ def campaign_state(now=None, chapters=None):
         "tierRewards": [int(r) for r in CAMPAIGN_TIER_REWARDS[:reached]],
         # the fictional feed that *is* the total: how many completions so far,
         # and the newest one, so the report/log can show the same story
-        "feedCount": int(len(pool_stream(index))),
+        "feedCount": int(len(pool_so_far(index, now))) + len(mine),
+        "ownCount": int(len(mine)),
+        "ownPoints": int(sum(_int(e.get("points"), 0) for e in mine)),
         "lastBeaten": (None if last is None else
                        {"name": last["name"], "mission": int(last["mission"]),
-                        "points": int(last["points"])}),
+                        "points": int(last["points"]),
+                        "own": bool(last.get("own"))}),
     }
 
 
-def campaign_sync(state, now=None, chapters=None):
+def campaign_sync(state, now=None, chapters=None, own=None):
     """Refresh ``state["campaign"]`` and return the same summary.
 
     The numbers are *computed*, not accumulated: this only makes them visible in
@@ -881,7 +932,9 @@ def campaign_sync(state, now=None, chapters=None):
     month's shape without a log).  Reading them back is not what drives the
     wire -- a corrupt or hand-edited block therefore cannot move the bar.
     """
-    summary = campaign_state(now, chapters)
+    if own is None and isinstance(state, dict):
+        own = own_contributions(state)
+    summary = campaign_state(now, chapters, own=own)
     if isinstance(state, dict):
         block = state.get("campaign")
         if not isinstance(block, dict):

@@ -481,20 +481,36 @@ def test_campaign_month():
           CE.campaign_target(index + 1) != target,
           (target, CE.campaign_target(index + 1)))
 
-    # the bar fills over the month: monotone, and exactly on target at the end
-    totals = [CE.campaign_total(index, base + timedelta(days=d))
+    # the bar fills over the month: monotone, and lands near the target at the
+    # end.  Sample at the END of each campaign day (start+23h) so every sample
+    # belongs to a different day of THIS campaign - sampling from "base" walks
+    # off the end of the month and then repeats the final total (delta 0).
+    epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
+    day_one = epoch + timedelta(days=start_day, hours=23)
+    totals = [CE.campaign_total(index, day_one + timedelta(days=d))
               for d in range(30)]
     check("progress never goes backwards",
           all(totals[i] <= totals[i + 1] for i in range(len(totals) - 1)),
           totals[:5])
     check("the first day already shows progress", totals[0] > 0, totals[0])
-    check("the campaign ends exactly on the target", totals[-1] == target,
-          (totals[-1], target))
+    # the target is a fuzzy aim, not a promise: the fiction lands NEAR it
+    check("the campaign lands close to its target (+/-10%)",
+          abs(totals[-1] - target) <= target * 0.10, (totals[-1], target))
 
     # the total IS the fictional feed: same number, same story
     stream = CE.pool_stream(index)
-    check("the feed's points add up to the target",
-          sum(e["points"] for e in stream) == target, len(stream))
+    check("the whole feed is worth about the target",
+          abs(sum(e["points"] for e in stream) - target) <= target * 0.10,
+          (sum(e["points"] for e in stream), target))
+    rates = [totals[i] - totals[i - 1] for i in range(1, len(totals))]
+    mean_rate = sum(rates) / max(1, len(rates))
+    # a flat drip would be boring: every day must add something, but the pace
+    # has quiet days and surge days (a fictional world plays in bursts)
+    check("every day adds at least one completion",
+          min(rates) > 0, min(rates))
+    check("the rate varies from day to day (quiet days and surge days)",
+          max(rates) > 1.5 * mean_rate and min(rates) < 0.5 * mean_rate,
+          (min(rates), max(rates), round(mean_rate)))
     by_mission = {m: sum(1 for e in stream if e["mission"] == m)
                   for m in (1, 2, 3)}
     check("most players beat mission 1, fewer 2, fewest 3",
@@ -533,10 +549,37 @@ def test_campaign_month():
     check("f7 is the campaign target", doc["g"] == target, doc["g"])
     check("f6 is the worldside progress so far", doc["f"] == summary["total"],
           (doc["f"], summary["total"]))
-    check("f6 never exceeds f7", 0 <= doc["f"] <= doc["g"], (doc["f"], doc["g"]))
+    # the fiction may overshoot the drawn target by a few percent (it is an
+    # aim, not a promise), but never collapses or overshoots wildly
+    check("f6 stays in a sane band around f7",
+          0 <= doc["f"] <= doc["g"] * 1.15, (doc["f"], doc["g"]))
     check("the campaign block is written to the state for reporting",
           state["campaign"]["target"] == target
           and state["campaign"]["total"] == summary["total"], state["campaign"])
+
+    # the player's own completions are part of the same pool and feed
+    own_state = {"completedMissions": [
+        {"a": "Player", "id": 3054015, "ts": int(base.timestamp()),
+         "points": 5, "rep": 150, "pid": "default"}]}
+    own = CE.own_contributions(own_state)
+    check("an own completion becomes a feed entry (career value, not 1/5/10)",
+          len(own) == 1 and own[0]["points"] == 150 and own[0]["own"] is True,
+          own)
+    check("the own completion is counted in the pool",
+          CE.campaign_total(index, base, own=own) -
+          CE.campaign_total(index, base) == 150,
+          CE.campaign_total(index, base, own=own) -
+          CE.campaign_total(index, base))
+    check("... and is listed first in the feed",
+          CE.pool_feed(index, 3, base, own=own)[0].get("own") is True,
+          CE.pool_feed(index, 3, base, own=own)[0])
+    own_summary = CE.campaign_state(base, own=own)
+    check("the campaign block records the player's share",
+          own_summary["ownCount"] == 1 and own_summary["ownPoints"] == 150
+          and own_summary["lastBeaten"]["own"] is True, own_summary["ownCount"])
+    check("the feed count is what has happened so far, plus the player's work",
+          own_summary["feedCount"] == len(CE.pool_so_far(index, base)) + 1,
+          (own_summary["feedCount"], len(CE.pool_so_far(index, base))))
 
     # a chapter lasts the whole month and changes with the next campaign
     chapters_seen = []
