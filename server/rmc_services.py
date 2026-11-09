@@ -424,6 +424,13 @@ def _migrate_state(state):
             rep = doc.get("reputation")
             if not isinstance(rep, dict):
                 doc["reputation"] = {}
+            elif rep and "reputationVersion" not in doc:
+                # a save from before the version pair: announce the map once, so
+                # the first login after this upgrade makes the client refetch
+                # (otherwise it keeps its own zeros and the career page stays
+                # empty although the points are right here)
+                doc["reputationVersion"] = 1
+                doc["reputationSeen"] = 0
             else:
                 # JSON turns the u32 keys into strings; a mix of both makes
                 # store.save()'s sort_keys raise TypeError and lose the write
