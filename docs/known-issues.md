@@ -117,6 +117,13 @@ may warn or quarantine it. Build the loader yourself from
 
 **Symptom:** the Ark's **Politics** tab cannot be opened; hovering shows that.
 
+> **Parked by decision (2026-11-09).** The tab is a multi-player feature: its four
+> buttons are the World Patron's favours granted to *other players on the map*
+> (multiplayer or AI), so a local single-player world has no use for it. The opt-in
+> loader patch below (`UPC_POLITICS=probe|on`, default **off**) stays in the tree as
+> a curiosity; nothing else is planned here unless someone wants player buffs in
+> their own game.
+
 **Verdict (2026-11-09, re-derived from the binary after the "but the wiki says it
 works in continuous games" objection): the tab is enabled by local world/slot/UI
 state only - no server reply, document or session parameter reaches the
