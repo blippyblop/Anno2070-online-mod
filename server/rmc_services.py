@@ -1763,8 +1763,8 @@ def h_solve_daily_quest(store, r, ctx):
         known.add(quest)
         log.append({"quest": quest, "ts": int(time.time()),
                     "reward": DAILY_QUEST_REWARD})
-        _add_reputation_all(store, _ctx_pid(ctx), DAILY_QUEST_REWARD,
-                            reason="daily quest %d" % quest)
+        _add_reputation(store, _ctx_pid(ctx), DAILY_QUEST_REWARD,
+                        reason="daily quest %d" % quest)
     del log[:-MAX_UPLOADS]
     store.save()
     if LOG is not None:
@@ -1883,15 +1883,20 @@ def h_vote(store, r, ctx):
     else:
         rewarded[ticket] = faction
         if previous is None:
-            # first vote in this election: pay the participation reward once
-            # (to every faction - the career table marks it "All logos")
+            # first vote in this election: pay the participation reward once,
+            # to the faction the player picked
             _credit_vote(store, faction, ctx)
+        elif previous != faction:
+            # a change of mind moves the 50 to the faction they ended up voting
+            # for - one payment per election, but it must not stay on a faction
+            # the player voted away from
+            _move_vote_reward(store, pid, previous, faction)
     store.save()
     # Vote_V1's reply has NO body at all (the client skips parsing)
     return _reply(VOTING, "Vote_V1")
 
 
-def _unused_move_vote_reward(store, pid, old_faction, new_faction):
+def _move_vote_reward(store, pid, old_faction, new_faction):
     """Move an election's 50 points from the faction voted before to the new one.
 
     One payment per election stays one payment; only its faction follows the
@@ -1930,10 +1935,11 @@ def _credit_vote(store, faction, ctx):
     if faction not in content_voting.FACTIONS:
         return
     pid = _ctx_pid(ctx)
-    # participation is paid to all three factions (see _add_reputation_all);
-    # the voted faction is what the ballot is *for*, not what gets the points
-    _add_reputation_all(store, pid, content_voting.VOTE_REWARD,
-                        reason="vote (faction %d)" % faction)
+    # the player picks the faction by voting for it: the 50 points go there and
+    # nowhere else ("All logos" in the wiki's career table means "your choice of
+    # faction", not "every faction")
+    _add_reputation(store, pid, content_voting.VOTE_REWARD,
+                    reason="vote", faction=faction)
     we = _world_event_state(store)
     wer = we.get("reputation")
     if not isinstance(wer, dict):
@@ -1968,26 +1974,6 @@ def aligned_faction(store, pid="default"):
         if choice in content_voting.FACTIONS:
             return choice
     return content_voting.FACTION_ECO
-
-
-def _add_reputation_all(store, pid, points, reason="reward"):
-    """Add career reputation to **all three factions** (the wiki's "All logos").
-
-    The shipped career table (wiki "Career Points", cross-checked against the
-    in-game tooltips) marks every *participation* reward with "All logos" - both
-    election participations (50), the election gift (25, elected faction),
-    daily quests (50), global-event missions (50/150/300) and the crisis
-    thresholds (50/100/150/200).  Only campaign/single-mission points are
-    faction-specific.  Crediting one arbitrary faction is what made a player see
-    "I earned points and my faction still shows 0".
-    """
-    points = _as_int(points, 0)
-    if not points:
-        return 0
-    total = 0
-    for faction in content_voting.FACTIONS:
-        total = _add_reputation(store, pid, points, reason=reason, faction=faction)
-    return total
 
 
 def _bump_reputation_version(player_doc, delta=1):
@@ -2063,8 +2049,8 @@ def _credit_mission(store, pid, record):
     record["points"], record["rep"] = points, rep_points
 
     p = store.player(pid)
-    _add_reputation_all(store, pid, rep_points,
-                        reason="mission %s" % record.get("id"))
+    _add_reputation(store, pid, rep_points,
+                    reason="mission %s" % record.get("id"))
 
     we = _world_event_state(store)
     wer = we.get("reputation")
@@ -2399,8 +2385,8 @@ def _pay_campaign_tiers(store, we, summary, ctx=None):
     for tier in fresh:
         reward = _as_int(rewards[min(tier, len(rewards)) - 1], 0)
         for pid in pids:
-            _add_reputation_all(store, pid, reward,
-                                reason="campaign tier %d" % tier)
+            _add_reputation(store, pid, reward,
+                            reason="campaign tier %d" % tier)
         done.append(int(tier))                 # record BEFORE paying out
     if LOG is not None:
         LOG("campaign %s: tiers %r crossed, %d reputation each to %r"

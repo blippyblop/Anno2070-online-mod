@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.7 - 2026-11-09
+
+Corrected
+- **"All logos" means the player chooses ONE faction, not all three.** The wiki's
+  career table uses one icon for "a reward the player assigns to a faction of
+  their choice", and I read it as "credited to every faction" - wrong. 0.1.6 made
+  every participation reward pay all three; that is reverted. Now:
+  * a vote pays the **faction voted for** (a change of vote **moves** the 50 there
+    instead of duplicating it),
+  * a world-event mission, a campaign tier and a daily quest pay the **aligned**
+    faction - the one you last voted for, Eco if you have never voted,
+  * the election gift (25) still goes to the **elected** faction.
+- Every credit path is verified to write the file: each one calls `store.save()`,
+  and the tests re-open the state file from disk after voting, after a mission and
+  after a tier payout. `All logos` column in `docs/wiki-gaps.md` corrected, and
+  `repair_state.py --rebalance-career` (which encoded the wrong rule) removed.
+
 ## 0.1.6 - 2026-11-09
 
 Fixed (from the downloaded wiki, cross-checked against the game data)

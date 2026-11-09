@@ -134,11 +134,10 @@ def main():
         check("the council keeps the council vote", int(infos["1"]["f6"]) == CV.FACTION_TECH,
               infos["1"]["f6"])
         career = u32map(call(store, PROFILE, "GetReputationPoints_V1"))
-        # the career table marks election participation "All logos", so both
-        # votes grow every faction (2 elections x 50)
-        check("both votes paid reputation to every faction",
-              all(career.get(f) == 2 * CV.VOTE_REWARD for f in CV.FACTIONS),
-              career)
+        # each ballot pays the faction it was cast for (Tycoon, then Tech)
+        check("both votes paid reputation to the faction voted for",
+              career.get(CV.FACTION_TYCOON) == CV.VOTE_REWARD
+              and career.get(CV.FACTION_TECH) == CV.VOTE_REWARD, career)
         print("        career %s" % career)
 
         print("\n[3] a solved world-event mission")
@@ -147,8 +146,8 @@ def main():
         call(store, WORLD, "CompleteMission_V1", le32(mission) + b"\x06\x00Player\x00")
         after = u32map(call(store, PROFILE, "GetReputationPoints_V1"))
         info = CE.mission_info(mission)
-        check("the mission paid its reputation to every faction",
-              sum(after.values()) - sum(before.values()) == info["reputation"] * 3,
+        check("the mission paid its reputation (aligned faction)",
+              sum(after.values()) - sum(before.values()) == info["reputation"],
               (before, after))
         ach = store.player("default").get("achievements") or []
         check("its achievement unlocked",

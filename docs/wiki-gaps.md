@@ -18,7 +18,7 @@ deliberately do something else.
 | Senate vote | vote Thorne/Rodriguez/Devi; each round a problem with one solution per candidate; when it concludes the new rules apply and *all* players get a small bonus and a small loss (Voting#Senate) | 3-day cycles, drawn electorate revealed over time, own vote persisted, participation pays 50 to **every** faction once per election; no "conclusion" state, no law effect | differs |
 | World Council vote | elect Banes/Green/F.A.T.H.E.R. as president (Voting#World Council) | slot 1, incumbent faction served in `f9`, same simulated electorate | impl (ballot) |
 | Council actions / **licenses** | four actions per president, bought with licenses, activated in the Ark's **Politics** tab, only in continuous gameplay | nothing (no license state anywhere); the tab is client-gated, see `known-issues.md` #10 | not |
-| Career points: earning (Career Points) | daily quest 50, senate participation 50, world participation 50, election gift 25 (**elected faction**), global-event missions 50/150/300, crisis thresholds 50/100/150/200 - all marked **"All logos"** = all three factions; only campaign/single missions are faction-specific | since 0.1.6 exactly that: `_add_reputation_all` for every participation reward, `_pay_election_gifts` for the 25-point gift to the winner faction, missions 50/150/300, tiers 50/100/150/200, daily quest 50 | impl |
+| Career points: earning (Career Points) | daily quest 50, senate participation 50, world participation 50, election gift 25 (**elected faction**), global-event missions 50/150/300, crisis thresholds 50/100/150/200. The **"All logos"** icon means **the player chooses the faction**, not "all three" (confirmed by the project owner); only campaign/single missions are fixed to a faction | the chosen faction gets the points: a vote credits the faction voted for (a change of vote moves them), a mission/tier/quest credits the player's aligned faction (their last vote, Eco if none), the election gift goes to the elected faction. Served via `GetReputationPoints` with a version pair so the client refetches | impl |
 | Career ladder & rewards | 13 levels, 12,650 points per faction: colour at 2, votes ×10 at 3, an ark socket at 4, portraits at 6/9, ark cargo at 7, ark model at 10, 20 % discount at 11, express delivery at 12, protection formulas at 13 (Career Points#Rewards) | the reputation map is stored and served; the ladder itself is client data (this build shows 10 levels, cap 6,950 in the base game) and nothing is gated server-side | differs |
 | Vote weight | "your votes gain more power if you earn enough career points"; level 3 = votes for that faction worth **ten times** more | one ballot counts one | not yet (cheap: weight the own ballot by the faction's stored total) |
 | Achievements | 223; no gameplay benefit; unlock titles/colours; "Vote in the Senate 1/25/50"; "Mad Scientist" for filling every ark socket (Achievements) | client-pushed ids are stored (dedup by id); world-event missions grant theirs | partial |
@@ -31,15 +31,16 @@ deliberately do something else.
 
 ## Cheap wins that were taken in 0.1.6
 
-1. **Participation rewards now pay every faction** - the wiki marks them all
-   "All logos". This was the real cause of "I earned points and my faction
-   shows 0".
+1. **Single-faction credit is now exact**: the faction the player *chooses* gets
+   the points, and it is written to the save file (verified by re-opening the
+   file in the tests). A changed vote moves its 50 to the new faction; a
+   mission/tier/quest credits the aligned faction.
 2. **Election gift**: 25 points to the elected faction when an election
    concludes (`_pay_election_gifts`, idempotent per slot+election).
 3. **Daily quest 50** (was 100): the wiki's own arithmetic says 350/week = 7×50.
-4. `repair_state.py --rebalance-career` lifts a save written under the old
-   single-faction rule to the all-faction model (what the rule would have
-   produced).
+4. **The client is told when the map changed** (`reputationVersion` /
+   `reputationSeen`), so the career page refetches instead of keeping its own
+   zeros - the other half of "the points were not saved".
 
 ## Still worth doing, in payoff order
 

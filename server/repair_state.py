@@ -21,7 +21,7 @@ part of its own login chain.
 Nothing else is touched: reputation, votes, mails, the campaign block and the
 schema stay exactly as they are.
 
-    python server\\repair_state.py [state.json] [--dry-run] [--rebalance-career]
+    python server\\repair_state.py [state.json] [--dry-run]
 """
 import json
 import os
@@ -65,43 +65,6 @@ def valid_record(item):
             and 0 <= index <= MAX_SOCKET_INDEX
             and 0 < item_id < MAX_ITEM_ID
             and count > 0)
-
-
-def rebalance_career(state, dry_run=False):
-    """Give every faction the highest total any faction has.
-
-    The career table marks election participation, daily quests, global-event
-    missions and the crisis thresholds "All logos" (all three factions), but this
-    server credited a single faction until 0.1.6.  A save written before that
-    therefore has factions that were never paid: this lifts each one to the best
-    total in the map, which is what the rule would have produced.
-    """
-    done = []
-    players = state.get("players") if isinstance(state, dict) else None
-    for pid, player in (players or {}).items():
-        if not isinstance(player, dict):
-            continue
-        rep = player.get("reputation")
-        if not isinstance(rep, dict) or not rep:
-            continue
-        values = {}
-        for key, value in rep.items():
-            try:
-                values[int(key)] = int(value)
-            except (TypeError, ValueError):
-                continue
-        if not values:
-            continue
-        best = max(values.values())
-        if all(values.get(f, 0) == best for f in (0, 1, 2)):
-            continue
-        done.append("%s: reputation %r -> every faction %d"
-                    % (pid, dict(sorted(values.items())), best))
-        if not dry_run:
-            player["reputation"] = {f: best for f in (0, 1, 2)}
-            player["reputationVersion"] = int(
-                player.get("reputationVersion") or 0) + 1
-    return done
 
 
 def repair(state, dry_run=False):
@@ -160,11 +123,7 @@ def main(argv):
     print(" save repair%s" % ("  (dry run - nothing is written)" if dry_run else ""))
     print("=" * 69)
     print("    file : %s  (%d bytes)" % (path, os.path.getsize(path)))
-    lines = repair(state, dry_run)
-    if "--rebalance-career" in argv:
-        lines += rebalance_career(state, dry_run) or [
-            "every faction already carries the same total"]
-    for line in lines:
+    for line in repair(state, dry_run):
         print("    - %s" % line)
     if dry_run:
         print("=" * 69)

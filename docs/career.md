@@ -55,7 +55,7 @@ and (b) a client patch (see "Plan B") has something to paint.
 
 | method | reply shape | what we serve now |
 |---|---|---|
-| `GetReputationPoints_V1` | `map<u32,u32>` (faction -> points) | **always** the three factions: +50 per senate/World Council vote, +50/+100/+150/+200 per crossed campaign tier, +50/+150/+300 per solved world-event mission (add-only) |
+| `GetReputationPoints_V1` | `map<u32,u32>` (faction -> points) | **always** the three factions: 50 per vote **on the faction you voted for** (a change of vote moves it), 50/100/150/200 per crossed campaign tier and 50/150/300 per solved world-event mission on the faction you back (your last vote, Eco if none), plus the 25-point election gift to the elected faction - add-only |
 | `AreReputationPointsMissing_V1` | one bool; request carries one u32 | `0` (present) once the profile has any reputation, else `1` |
 | `SetReputationPoints_V1` | void | **merge-max**: a client echo may raise a total, never lower it |
 | `GetStats_V1` | `u32 count` + N x `StatsEntry` (`u32,u32,u32,u64,u64,u64`) | the rows the client last uploaded (empty if it never did) |
