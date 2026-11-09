@@ -1499,8 +1499,10 @@ def h_get_reputation_points(store, r, ctx):
     pairs = {faction: max(0, _as_int(rep.get(faction), 0))
              for faction in content_voting.FACTIONS}
     pairs.update({k: v for k, v in rep.items() if k not in pairs})
+    p["reputationSeen"] = _as_int(p.get("reputationVersion"), 0)
     if LOG is not None:
-        LOG("reputation: GetReputationPoints -> %r" % (pairs,))
+        LOG("reputation: GetReputationPoints -> %r (v%s, marked as seen)"
+            % (pairs, p["reputationSeen"]))
     return _reply(PROFILE, "GetReputationPoints_V1", pairs=pairs)
 
 
@@ -1514,17 +1516,22 @@ def h_are_rep_missing(store, r, ctx):
     p = store.player(_ctx_pid(ctx))
     asked = r.u32() if r.remaining() >= 4 else None
     rep = _int_keyed(p.get("reputation", {}))
-    # "missing" is a property of the PROFILE, not of one faction: answering
-    # per key told the client "the server has nothing" for every faction the
-    # player had not earned yet, so it kept its own local zero and the career
-    # page showed nothing even though the vote had been credited.
-    missing = 0 if rep else 1
+    # "missing" means "your copy is stale", not "do you have any points":
+    #  * no points at all            -> missing (nothing to copy yet)
+    #  * points changed since the
+    #    client last fetched the map -> missing (refetch, this is the moment the
+    #                                   career page refreshes)
+    #  * client already has the map  -> not missing
+    version = _as_int(p.get("reputationVersion"), 0)
+    seen = _as_int(p.get("reputationSeen"), 0)
+    missing = 1 if (not rep or seen < version) else 0
     probe = _reputation_probe(asked, missing)
     if probe is not None:
         missing = probe
     if LOG is not None:
-        LOG("reputation: AreMissing asked=%r have=%r -> %d%s"
-            % (asked, rep, missing, " (probe override)" if probe is not None else ""))
+        LOG("reputation: AreMissing asked=%r have=%r version=%d seen=%d -> %d%s"
+            % (asked, rep, version, seen, missing,
+               " (probe override)" if probe is not None else ""))
     return _reply(PROFILE, "AreReputationPointsMissing_V1", missing=missing)
 
 
@@ -1552,6 +1559,7 @@ def h_set_reputation_points(store, r, ctx):
                 % (key, value, old_value))
         return _reply(PROFILE, "SetReputationPoints_V1")
     rep[key] = value
+    _bump_reputation_version(p)
     store.save()
     if LOG is not None:
         try:
@@ -1867,12 +1875,44 @@ def h_vote(store, r, ctx):
     else:
         rewarded[ticket] = faction
         if previous is None:
-            # first vote in this election: pay once, but never for a change of
-            # mind (a second faction in the same election must not double-pay)
+            # first vote in this election: pay once
             _credit_vote(store, faction, ctx)
+        elif previous != faction:
+            # a change of mind MOVES the reward to the faction the player now
+            # supports - it still pays only once per election, but the points
+            # must not stay on a faction the player has voted away from (that
+            # is what made "I voted Eco but my Eco points never arrived" true)
+            _move_vote_reward(store, pid, previous, faction)
     store.save()
     # Vote_V1's reply has NO body at all (the client skips parsing)
     return _reply(VOTING, "Vote_V1")
+
+
+def _move_vote_reward(store, pid, old_faction, new_faction):
+    """Move an election's 50 points from the faction voted before to the new one.
+
+    One payment per election stays one payment; only its faction follows the
+    player's final choice, so the career page cannot end up crediting a faction
+    they no longer support.
+    """
+    if old_faction not in content_voting.FACTIONS or new_faction not in content_voting.FACTIONS:
+        return
+    if old_faction == new_faction:
+        return
+    p = store.player(pid)
+    rep = _int_keyed(p.get("reputation", {}))
+    old = _as_int(rep.get(old_faction), 0)
+    moved = min(old, content_voting.VOTE_REWARD)
+    if not moved:
+        return
+    rep[old_faction] = old - moved
+    rep[new_faction] = _as_int(rep.get(new_faction), 0) + moved
+    p["reputation"] = rep
+    _bump_reputation_version(p)
+    if LOG is not None:
+        LOG("career: vote changed %d -> %d, moved %d reputation  map=%r v%d"
+            % (old_faction, new_faction, moved, dict(sorted(rep.items())),
+               p.get("reputationVersion")))
 
 
 def _credit_vote(store, faction, ctx):
@@ -1899,14 +1939,61 @@ def _credit_vote(store, faction, ctx):
         wer[pid] = content_voting.VOTE_REWARD
 
 
+def aligned_faction(store, pid="default"):
+    """The faction the player last voted for (their "alignment"), else Eco.
+
+    A world-event mission is not faction-specific, so its reputation has to go
+    somewhere.  Picking the *smallest existing key* (what this used to do) put a
+    mission's points on whatever faction happened to be first - the report "I
+    earned points and my faction still shows 0" is exactly that.  The player's
+    own last vote is the only signal we have about which faction they are
+    working for, and Eco (0) is the neutral default.
+    """
+    voting = store.state.get("voting") if isinstance(store.state, dict) else None
+    votes = voting.get("votes") if isinstance(voting, dict) else None
+    for vote in reversed(votes if isinstance(votes, list) else ()):
+        if not isinstance(vote, dict):
+            continue
+        if str(vote.get("voter", "") or "") != str(pid):
+            continue
+        try:
+            choice = int(vote.get("choice", -1))
+        except (TypeError, ValueError):
+            continue
+        if choice in content_voting.FACTIONS:
+            return choice
+    return content_voting.FACTION_ECO
+
+
+def _bump_reputation_version(player_doc, delta=1):
+    """Remember that the career map changed, so the client can be told to refetch.
+
+    ``AreReputationPointsMissing_V1`` is the client's "is my copy stale?" probe.
+    Answering it from "do we have any points" was a coin flip; a version pair
+    (changed vs fetched) is the honest answer: after every credit the client is
+    told the points are missing *until it has fetched the map*, which is the
+    moment it refreshes the career page.
+    """
+    try:
+        player_doc["reputationVersion"] = int(
+            player_doc.get("reputationVersion") or 0) + int(delta)
+    except (TypeError, ValueError):
+        player_doc["reputationVersion"] = int(delta)
+    return player_doc["reputationVersion"]
+
+
 def _add_reputation(store, pid, points, reason="reward", faction=None):
     """Add career reputation to ``players.<pid>.reputation`` (never overwrite).
 
     ``faction`` picks the key explicitly (a vote knows which faction paid); with
-    ``None`` the points land on the first key the player already has, or key 0
-    the first time they ever earn anything.  Add-only is the rule everywhere:
+    ``None`` the points land on the player's *aligned* faction (their last vote,
+    else Eco) - see :func:`aligned_faction`.  Add-only is the rule everywhere:
     two sources paying the same map must never wipe each other, and a client
     echo must never lower a total (see ``h_set_reputation_points``).
+
+    Every write bumps ``reputationVersion`` so ``AreReputationPointsMissing_V1``
+    can tell the client its copy is stale (that is what makes the career page
+    refresh instead of showing its own zeros).
 
     Returns the new total for that key (0 when nothing was written).
     """
@@ -1921,12 +2008,14 @@ def _add_reputation(store, pid, points, reason="reward", faction=None):
     if faction in content_voting.FACTIONS:
         key = int(faction)
     else:
-        key = min(normalised) if normalised else 0
+        key = aligned_faction(store, pid)
     normalised[key] = _as_int(normalised.get(key), 0) + points
     p["reputation"] = normalised
+    _bump_reputation_version(p)
     if LOG is not None:
         LOG(f"career: +{points} reputation ({reason}) -> faction {key} "
-            f"= {normalised[key]} for {pid}")
+            f"= {normalised[key]} for {pid}  map={dict(sorted(normalised.items()))} "
+            f"v{p.get('reputationVersion')}")
     return normalised[key]
 
 

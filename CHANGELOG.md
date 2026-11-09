@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.1.5 - 2026-11-09
+
+Fixed
+- **Career points now land on the faction you actually back.** A world-event
+  mission has no faction of its own, and the credit went to whichever key
+  happened to be smallest in the map - so a player who earned 50 points could
+  see their own faction at 0 (the report "I completed a world event, spent the
+  points on Eco, and they were gone"). Mission reputation now goes to the
+  faction of the player's **last vote** (Eco when they have never voted), a
+  **change of vote moves** the election's 50 points from the old faction to the
+  new one instead of leaving them behind, and every credit logs the faction plus
+  the resulting map.
+- **`AreReputationPointsMissing_V1` now answers "is your copy stale?" instead of
+  a coin flip.** We keep a version that increments on every credit and marks it
+  seen when the map is served, so after each change the client is told "missing"
+  exactly until it has fetched the map - which is the moment the career page
+  refreshes. Answering from "do we have any points" could tell the client its
+  numbers were fine when they had just changed.
+
+Docs
+- `docs/known-issues.md` #10 rewritten: the Ark Politics tab's gate is **proven
+  client-side** (`FUN_1403d7ec0` bails out when the local world has no politics
+  object and assigns `NULL` as the tab's page), no server payload can open it,
+  the two previously planned server experiments are recorded as dead ends, and
+  the exact client-patch plan (RVAs, bytes, diagnostic hook) is written down.
+
 ## 0.1.4 - 2026-11-09
 
 Fixed

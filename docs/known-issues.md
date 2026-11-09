@@ -115,82 +115,53 @@ may warn or quarantine it. Build the loader yourself from
 
 ## 10. "Connection to the World Council or Senate not possible at this time"
 
-**Symptom:** the Ark's **Politics** tab cannot be opened; hovering it shows that
-sentence.
+**Symptom:** the Ark's **Politics** tab cannot be opened; hovering shows that.
 
-### What the tab is
-
-The Ark has exactly three tabs, all visible in `guidata64/Game.cdf`:
-`ARK_STORAGE_TAB`, `ARK_UPGRADE_TAB` and `ARK_POLITICS_TAB` (the game spells it
-`POLTITCS_TAB`). The politics tab is the local view of the **world's** political
-state. Its own tooltip, and the strings the panel fills, come from the shipped
-localisation (`eng1.rda`):
-
-| loca id | file | text |
-|---|---|---|
-| 11412007 | `tt_normal.txt` | **Politics** - "Left click to view the current World Patron and voting results of the Senate." |
-| 21412007 | `tt_disabled.txt` | **Politics** - "Connection to the World Council or Senate not possible at this time." |
-| 11002778 | `tt_normal.txt` | Senate - "Laws are passed in the Senate that may be both an advantage and a disadvantage to all players. Frequent votes take place." |
-| 1000798 | `interface.txt` | "World Patron until [WORLDPATRON_END_DATE]: [CURRENT_WORLDPATRON_NAME]" |
-| 1000799 | `interface.txt` | "The next World Patron vote will begin on: [TIME_WHEN_WORLDPATRON_VOTE_STARTS]" |
-| 1000765 | `interface.txt` | "Winner of the last Senate vote: [SENATE_VOTE_WINNER] ..." |
-| 1000761/62 | `interface.txt` | "The following item on the agenda is up for vote in the Senate: ..." / "The next Senate vote will begin on: ..." |
-
-So 21412007 is the **disabled-state variant of the tab's own tooltip**, and the
-two ids differ by exactly **+10,000,000** - the engine's tooltip convention
-(98 such normal/disabled pairs exist in the two loca files, e.g. 11000064 ->
-21000064 "Not available offline"). The tab is not broken; it is *greyed out*,
-and the game prints its "disabled" text.
-
-### Why it is greyed out
-
-The tab's content is not voting-protocol data. The Ark's main-menu content binds
-six **game-state** properties by name (`FUN_14074a240`, verified by resolving
-every RIP-relative property binding in that function):
+**Verdict (2026-11-09, proven from the binary): the gate is entirely client-side
+and reads nothing that comes from a server reply.** The Ark window is
+`CObjectmenuArkFrame` (RTTI `.?AVCObjectmenuArkFrame@@`, vtable `0x167c670`, its
+`Init` virtual at **`0x3d65a0`**). `Init` caches the three tab widgets; the
+politics tab is `GetChildByHash(0x551c36f7)` stored at `frame+0x108`. The page is
+assigned by `FUN_1403d7ec0`:
 
 ```
-m_WorldPatronGUID        who is World Patron right now
-m_SenateEffectGUID       which senate law is currently in effect
-m_BlackSmokerStartTime   world event timing
-m_EnableTownAcquisition  world rule
-m_PlayerArkFeedback      the Ark's own feedback state
-m_DynamicAmbientList     world ambience
+0x3d7ef1  je 0x3d82e6   ; no game session            -> no page
+0x3d7efe  je 0x3d82e6   ; no world ([session+0x60])   -> no page
+0x3d7f0e  je 0x3d82e6   ; no politics object          -> no page
+                        ;   ([world+0x260] == NULL)
+0x3d7f1b  cmp [CWorldManager+0x3f0], 1 ; jg -> no page
+0x3d7f57  cmp (vector count), 1        ; jg -> no page
+          ; ...then a 27-entry jump table picks the page widget
+0x3d80b6  SetActivatedChild(tab, page)
+0x3d82d8  SetActivatedChild(tab, NULL)     <- what a local world hits
 ```
 
-A **World Patron is an elected player of a live world**, and the Senate effect is
-a law the whole world shares. Neither can exist on a single-player local server:
-there is no world session, no other players, and therefore no patron GUID - so
-the client disables the tab before it ever talks to us. It is also not
-deliverable over RMC: none of the **153** client methods across the ten
-protocols carries a patron, an effect GUID or a senate agenda (checked against
-`server/client_methods.json`, which is extracted from the client itself).
+`SetActivatedChild` is `0x140c8ee60`; "no page" is what renders as disabled, and
+the engine derives the disabled tooltip by adding `0x989680` (10,000,000) to the
+normal one (proven at `0x3de73e`), which is why the hover text is loca
+**21412007** - the disabled variant of 11412007 "Politics - Left click to view
+the current World Patron and voting results of the Senate".
 
-That is the honest bottom line: **no server payload can open this tab.** What it
-would show (patron name + expiry, senate agenda, last winner, next vote times)
-are world-wide facts a local server does not have.
+**So:** no RMC reply, no `VotingInfo` field and no profile/document value can
+open it (the callee list of `FUN_1403d7ec0` contains no service or document
+reader at all). The two "serve a vote result / serve the patron GUID"
+experiments previously listed here are **dead ends** - `VotingInfo.f9` only
+feeds the *content* of the council page, never this tab's availability.
 
-### What we do serve, and what to try next
+**What the tab would show if forced open:** the `ARK_POLITICS_PANEL` page with a
+World Patron block (needs `m_WorldPatronGUID`, texts 1000798/1000799), a Senate
+block (needs `m_SenateEffectGUID`, texts 1000761/62/65) and four
+`ARK_PATRON_ACTION1..4` buttons that are *item activations* from the Ark's own
+box (so those would work). In a local single-player world both GUIDs are 0, so
+the two text blocks stay empty.
 
-Both elections are live: `GetVotingInfos_V1` returns two `VotingInfo` documents
-(senate key 0 / vote id 0, World Council key 1 / vote id 1001), with a running
-flag and three packed dates; `GetVoteCount_V1`/`GetLastVoters_V1` answer per
-election id; `Vote_V1` records the vote and pays 50 career reputation once per
-election. The main-menu **Senate vote** and **World Council vote** entries are
-the working face of the same feature.
-
-Ordered experiments for the next live session (each one is a single knob):
-
-1. **Serve a vote *result*.** Our `VotingInfo` sends `f9`/`f10` =
-   `0xFFFFFFFF` ("no result"). If those last two words are the winning
-   faction/effect reference, filling them with a real faction could flip the tab.
-   Try `RV_VOTE_RESULT=0|1|2` and watch the tab.
-2. **Check where `m_WorldPatronGUID` comes from.** If it is a session parameter
-   (`SetSessionParameters`/`GetGameSettings` in `MatchMakingServiceProtocol`),
-   it is blocked together with conquest/matchmaking (issue 2 above) - the client
-   never receives its matchmaking address.
-3. **Log the gate.** The tab's handle is cached at `this+0x108` right after the
-   name hash `0x551c36f7` is resolved (`Anno5.exe+0x3d66c7`, second site
-   `+0x3d763c`); a loader detour there can print the boolean the frame tests. If
-   it turns out to be a plain flag, forcing it would open the tab - but with no
-   patron data to show, so it would be a hollow win and is labelled a client
-   patch, not an online feature.
+**The only route, if it is ever wanted** (client patch - our loader already
+patches client defects): first hook `0x1403d7ec0` and log
+`[CWorldManager+0x3f0]`, `[CGameEngine+0x208]`, `[session+0x60]`,
+`[[session+0x60]+0x260]`, `[frame+0x108]`, `[[frame+0x108]+0x27c]` and
+`[[frame+0x108]+0x380]` - one session tells us which of the five conditions
+actually trips. Then either trampoline `0x3D82D8` to call
+`SetActivatedChild(tab, [frame+0x100])` instead of `NULL`, or - if it is the
+widget's own disabled bit - clear bit 28 of `tab+0x27c` and set the tooltip back
+to `0xAE2227` (11412007). Both are 6-14 byte patches inside the Ark window's own
+update, trivially reversible.

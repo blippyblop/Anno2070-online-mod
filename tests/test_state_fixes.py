@@ -1037,6 +1037,94 @@ def test_profile_survives_a_restart(tmp):
           int(settings.get(11, settings.get("11", -1))) == 3, settings)
 
 
+
+
+def test_career_credit_paths(tmp):
+    """Every place that credits career points: attribution + reachability."""
+    print("career points: who gets them, and does the client learn about them")
+    path = os.path.join(tmp, "career-paths.json")
+    store = R.open_store(path)
+
+    def ask_missing():
+        raw = body_of(PROFILE, "AreReputationPointsMissing_V1", store)
+        return raw[0]
+
+    def fetch():
+        return map_of(body_of(PROFILE, "GetReputationPoints_V1", store))
+
+    def credits():
+        return {int(k): int(v) for k, v in
+                store.player("default").get("reputation", {}).items()}
+
+    # A. a vote credits the faction that was voted for
+    check("a profile with no points reports them missing",
+          ask_missing() == 1)
+    payload(VOTING, "Vote_V1", store, le32(0) + le32(CV.FACTION_ECO))
+    check("the senate vote paid Eco", credits() == {CV.FACTION_ECO: CV.VOTE_REWARD},
+          credits())
+    check("... and the client is now told the points are missing (stale copy)",
+          ask_missing() == 1, ask_missing())
+    served = fetch()
+    check("... serving the map answers for all three factions",
+          set(served) == set(CV.FACTIONS), served)
+    check("... and then it is no longer stale", ask_missing() == 0, ask_missing())
+
+    # B. a change of mind moves the 50, it does not stack
+    payload(VOTING, "Vote_V1", store, le32(0) + le32(CV.FACTION_TECH))
+    check("changing the vote moves the reward to the new faction",
+          credits() == {CV.FACTION_ECO: 0, CV.FACTION_TECH: CV.VOTE_REWARD},
+          credits())
+    check("a change of mind never pays twice",
+          sum(credits().values()) == CV.VOTE_REWARD, credits())
+
+    # C. a world-event mission has no faction: it goes to the aligned one
+    #    (the last vote), and it survives a restart
+    R.respond_payload(WORLD, "CompleteMission_V1", store=store,
+                      body=PROLOGUE + le32(3054014) + b"\x06\x00Player\x00")
+    after_mission = credits()
+    check("a mission pays into the faction the player voted for",
+          after_mission.get(CV.FACTION_TECH) == CV.VOTE_REWARD + 50,
+          after_mission)
+    check("... and it is written to the save file",
+          {int(k): int(v) for k, v in
+           R.open_store(path).player("default")["reputation"].items()} == after_mission)
+
+    # D. with no vote at all, a mission credits Eco (key 0) - never "whatever
+    #    key happens to be smallest"
+    fresh_path = os.path.join(tmp, "career-no-vote.json")
+    fresh = R.open_store(fresh_path)
+    R.respond_payload(WORLD, "CompleteMission_V1", store=fresh,
+                      body=PROLOGUE + le32(3054014) + b"\x06\x00Player\x00")
+    check("without a vote, a mission credits Eco",
+          {int(k): int(v) for k, v in
+           fresh.player("default")["reputation"].items()} == {CV.FACTION_ECO: 50},
+          fresh.player("default")["reputation"])
+
+    # E. a campaign tier pays every player once (the third credit path)
+    we = store.state.setdefault("worldEvent", {})
+    summary = CE.campaign_state()
+    fake = {"index": summary["index"], "chapter": summary["chapter"],
+            "tiersReached": 1, "target": summary["target"],
+            "total": CE.campaign_tiers(summary["chapter"])[0]}
+    before = sum(credits().values())
+    R._pay_campaign_tiers(store, we, fake, {"pid": "default"})
+    check("a crossed campaign tier pays its reputation",
+          sum(credits().values()) == before + CE.CAMPAIGN_TIER_REWARDS[0],
+          credits())
+    R._pay_campaign_tiers(store, we, fake, {"pid": "default"})
+    check("... once only", sum(credits().values()) == before + CE.CAMPAIGN_TIER_REWARDS[0])
+
+    # F. a client echo below our value is ignored, above it is accepted
+    payload(PROFILE, "SetReputationPoints_V1", store,
+            le32(CV.FACTION_ECO) + le32(0))
+    check("a stale client echo cannot lower a total",
+          credits().get(CV.FACTION_ECO, 0) == 0, credits())
+    payload(PROFILE, "SetReputationPoints_V1", store,
+            le32(CV.FACTION_ECO) + le32(500))
+    check("a higher client echo is accepted",
+          credits().get(CV.FACTION_ECO) == 500, credits())
+
+
 def main():
     tmp = tempfile.mkdtemp(prefix="anno-statefix-")
     try:
@@ -1056,6 +1144,7 @@ def main():
         test_the_request_prologue(tmp)
         test_council_vote_survives_a_restart(tmp)
         test_profile_survives_a_restart(tmp)
+        test_career_credit_paths(tmp)
         test_statistics_persist(tmp)
         test_reputation_never_goes_backwards(tmp)
         test_campaign_payout(tmp)
