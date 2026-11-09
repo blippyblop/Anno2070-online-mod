@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.1.10 - 2026-11-09
+
+Added (staged, opt-in, not yet run in the game)
+- **A client patch for the Ark Politics tab, in our own loader DLL.** The tab is
+  not server-fixable (see `docs/known-issues.md` #10 - the enable condition reads
+  only local world/slot/UI state, and there is no game-mode check at all, which is
+  why a continuous game did not help). `UPC_POLITICS` now has two modes:
+  * `probe` - hooks `SetActivatedChild` (`0xc8ee60`) and the Ark tab-state thunk
+    (`0xc39930`), logs per-Ark-update `tab widget <p> state=<0|1>` and
+    `SetActivatedChild(tab, page)` with `<-- DISABLED` / `<-- NO PAGE>` markers, and
+    changes no behaviour. One session says which half fails.
+  * `on` - forces it: `0x3fb8a7` `33 d2` -> `b2 01` (always enabled) and the page
+    selector's five bail-outs retargeted to the last-resort page block `0x3d7fdf`
+    (`UPC_POLITICS_PAGE=<hex>` picks the page widget, default `+0x100`).
+  Every write verifies its expected bytes first and logs `refused` on a foreign
+  build; a partial application touches nothing else.
+- `PLAY.bat` reads `politics = probe|on` from `config.ini` `[options]` and exports
+  it as `UPC_POLITICS`; `config.ini` documents it as an opt-in client patch.
+- `loader/build-dll.sh` - the documented one-command DLL build (mingw-w64, `-O2
+  -static`), so the shipped DLL is reproducible; the patched build is staged as
+  `loader/bin/upc_r2_loader64.dll.politics` and never replaces the default.
+- `tests/test_politics_patch.py` - parses the RVA constants out of the C source,
+  then checks every site against the real `Anno5.exe`: the gate is `33 d2`, each of
+  the five branches is a near Jcc aimed where the source says, the patched rel32
+  lands on `0x3d7fdf`, the page displacement is `+0x100`, and both probe prologues
+  are hookable 14/6-byte spans. Skips cleanly when no game binary is present.
+
+Docs
+- `docs/known-issues.md` #10 rewritten: the real enable site, the corrected
+  mechanism (widget state, not "no page"), why "continuous only" is not implemented
+  in this build, and the opt-in route above.
+
 ## 0.1.9 - 2026-11-09
 
 Changed

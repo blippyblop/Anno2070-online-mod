@@ -7,7 +7,12 @@ so the game refuses to start (or starts in a crippled offline mode).
 
 * `src/upc_stub.c` — the whole thing, ~6.5k lines of C, no third-party code.
 * `bin/upc_r2_loader64.dll` — the prebuilt 64-bit DLL that INSTALL.bat copies
-  next to `Anno5.exe`. Build it yourself with `build.ps1` if you prefer.
+  next to `Anno5.exe`. Build it yourself with `build.ps1` (or `build-dll.sh`
+  under Linux/mingw) if you prefer.
+* `bin/upc_r2_loader64.dll.politics` — the same DLL including the **opt-in Ark
+  Politics patch** (`UPC_POLITICS=probe|on`). It is *not* installed by default:
+  copy it over `upc_r2_loader64.dll` (after INSTALL.bat, which keeps Ubisoft's
+  original as `.original-backup`) to try it. See `docs/known-issues.md` #10.
 
 ## What it does
 

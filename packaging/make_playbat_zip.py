@@ -43,7 +43,10 @@ SKIP_NAMES = {"state.json", "state.json.bak", "state.json.lock",
 SKIP_DIRS = {"__pycache__", ".git"}
 # developer archaeology, not needed by a player, and full of internal paths
 SKIP_FILES = {"protocol-notes.md"}
-ONLY_EXT = {".py", ".md", ".bat", ".sh", ".json", ".c", ".h", ".ps1", ".dll", ".txt"}
+# ".politics": the opt-in loader DLL (upc_r2_loader64.dll.politics), a
+# drop-in the player may copy over the default one - see known-issues #10
+ONLY_EXT = {".py", ".md", ".bat", ".sh", ".json", ".c", ".h", ".ps1", ".dll",
+            ".txt", ".politics"}
 SKIP_EXT = {".pyc", ".log", ".zip", ".exe", ".rda", ".sdb"}
 
 # things that must never leave the development box

@@ -185,7 +185,45 @@ patron GUID, a session flag or a document cannot change it. `VotingInfo.f9`
   the tab's content needs `m_WorldPatronGUID` / `m_SenateEffectGUID`, both 0 in a
   local world, so two of its three blocks would be empty.
 
-**One experiment left (needs the game):** in a continuous game, log at `0x3fb865`
+### Turning it on (staged, opt-in - a CLIENT PATCH)
+
+Because no server reply can open it, the way in is a patch in **our loader DLL**,
+applied at run time (the game's file is never modified on disk). It is opt-in, and
+it says so in the log every launch.
+
+1. `config.ini` → `[options]` → `politics = probe` (or `on`), or set the
+   environment variable `UPC_POLITICS=probe|on` before `PLAY.bat` (the knob wins
+   over the file).
+2. **`probe`** changes nothing: it hooks `SetActivatedChild` (`0xc8ee60`) and the
+   Ark's tab-state thunk (`0xc39930`) and logs, per Ark update,
+   `tab widget <p> state=<0|1>` and `SetActivatedChild(tab, page)`. A `state=0`
+   line for the politics widget means "disabled" (`<-- DISABLED`), a NULL page
+   means `<-- NO PAGE`. One continuous-game session tells us which half fails.
+3. **`on`** writes two things:
+   * `0x3fb8a7`: `33 d2` (`xor edx,edx`) → `b2 01` (`mov dl,1`) - the tab always
+     gets the enabled state;
+   * the selector's five bail-outs (`0x3d7ef1`, `0x3d7efe`, `0x3d7f0e`, `0x3d7f22`,
+     `0x3d7f57`) are retargeted to the last-resort page block at `0x3d7fdf`, so a
+     page is always activated. `UPC_POLITICS_PAGE=<hex>` (default `0x100`) picks
+     which page widget that block loads - the frame's own table (`Init`, hashes at
+     `frame+0x100..0x148`) is the menu, and the *right* one for the politics panel
+     is the open question the probe log answers.
+   Every write verifies the bytes it expects first and logs `refused` if the build
+   differs; if any write is refused nothing else is touched.
+
+**Expect it to be largely empty:** the panel needs `m_WorldPatronGUID` and
+`m_SenateEffectGUID` (both 0 in a local world), so its Patron and Senate blocks
+render blank; only the four `ARK_PATRON_ACTION` buttons (ordinary Ark item
+activations) would do something. This is "make the tab open", not "make it
+meaningful" - the content needs the online world data that no longer exists.
+
+**Status:** the patch, the probe and a test that re-checks every RVA and expected
+byte against `Anno5.exe` (`tests/test_politics_patch.py`) are in the tree; the DLL
+built from it is staged as `loader/bin/upc_r2_loader64.dll.politics`. It has **not
+been run in the game yet** - the test machine was offline when it was staged - so
+probe first, then `on`, then read the log.
+
+### The one experiment left (needs the game) in a continuous game, log at `0x3fb865`
 the five inputs (`[rsp+0x38]`, `[+0x1c]`, `[CAccess+0x180]`, `[world+0x58]`,
 `[world+0x258]`). The only one whose writer is not traced is the player-slot byte
 `+0x1c`; if it turns out to be session-derived (e.g. "slot is a remote player"),

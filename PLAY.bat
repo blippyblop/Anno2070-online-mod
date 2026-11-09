@@ -158,6 +158,13 @@ echo       server is answering.
 echo [5/5] starting Anno 2070
 cd /d "!GAMEDIR!"
 set UPC_CONQUEST_SUPPRESS_MS=0
+rem UPC_POLITICS is read by the loader DLL: off unless config.ini asks for it
+if defined POLITICS (
+  echo       politics option: !POLITICS! ^(client patch - see docs/known-issues.md #10^)
+  set "UPC_POLITICS=!POLITICS!"
+) else (
+  set "UPC_POLITICS="
+)
 start "" Anno5.exe
 cd /d "!HERE!"
 echo       waiting for the game to finish its online bootstrap
@@ -212,6 +219,9 @@ if /i "!k!"=="name"        set "PNAME=!v!"
 if /i "!k!"=="path"        set "GAMEDIR=!v!"
 if /i "!k!"=="http_port"   set "HPORT=!v!"
 if /i "!k!"=="log_dir"     set "LOGDIR=!v!"
+rem opt-in client patch: "probe" logs what the Ark tab widgets get,
+rem "on" forces the Politics tab open (see docs/known-issues.md #10)
+if /i "!k!"=="politics"    set "POLITICS=!v!"
 goto :eof
 
 :sleep

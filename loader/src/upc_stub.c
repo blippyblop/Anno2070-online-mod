@@ -2609,6 +2609,7 @@ static unsigned long long __cdecl sessstate_hook(void *guard)
 /* forward declarations for probes installed from conquest_probe_install */
 static void exit_trace_install(void);
 static void noquit_patch_install(void);
+static void politics_install(void);
 
 static void conquest_probe_install(void)
 {
@@ -2755,6 +2756,7 @@ static void conquest_probe_install(void)
         }
     }
     exit_trace_install();
+    politics_install();
     probe_log("conquest probes: startup-window suppression %s, window=%lu ms",
               g_conquest_connect_allowed ? "OFF (UPC_CONQUEST_CONNECT=1)" : "ON (default)",
               g_conquest_startup_ms);
@@ -4369,6 +4371,306 @@ static int gate_write(unsigned long rva, const unsigned char *expect,
     FlushInstructionCache(GetCurrentProcess(), target, (SIZE_T)nwrite);
     probe_log("gate patch: applied at rva 0x%lx", rva);
     return 1;
+}
+
+/* ---------------- Ark Politics tab (UPC_POLITICS, opt-in client patch) ----------------
+ *
+ * The Ark's Politics tab is greyed out in every local game, including a
+ * continuous one. That is not an online-state problem: the tab's state is
+ * computed in CObjectmenuArkFrame::Update (Anno5.exe .pdata 0x3fa830-0x3fb9ac)
+ * from purely local data and handed to the widget at frame+0x108:
+ *
+ *   0x3fb865  rax = player slot            ; [world+0x20][ [[world+0x60]+0x374] ]
+ *   0x3fb86f  byte [rax+0x1c] must be 0
+ *   0x3fb87c  active world slot <= 0x1e
+ *   0x3fb894  that slot's world == this world
+ *   0x3fb89a  byte [world+0x258] must be 0        ; set only while page 8/18/19/21/28
+ *   0x3fb8a3  mov dl,1     ; enabled
+ *   0x3fb8a7  xor edx,edx  ; disabled
+ *   0x3fb8a9  call [politics_widget+0x198](state = dl, 1, 0)
+ *
+ * Nothing in that chain reads a server reply (see docs/known-issues.md #10), and
+ * no game-mode check exists - which is why a continuous game does not help.
+ * The tab ALSO needs a page: FUN_1403d7ec0 assigns it, and bails to
+ * SetActivatedChild(tab, NULL) when it has no session/world, when
+ * [x+0x260] is null, or when more than one world/session is registered; the
+ * "no page" tooltip is the +0x989680 disabled variant.
+ *
+ * Two opt-in modes, both off by default (this is a CLIENT PATCH - it changes
+ * what the game does, so it is never silent):
+ *
+ *   UPC_POLITICS=probe   install two logging hooks and change no behaviour:
+ *                        - SetActivatedChild (0xc8ee60): logs (tab, page)
+ *                        - the Ark tab-state thunk (0xc39930): logs (widget, state)
+ *                        One continuous-game session then shows whether the
+ *                        politics tab is disabled (state 0) or merely has no page.
+ *
+ *   UPC_POLITICS=on      force it on:
+ *                        - 0x3fb8a7  33 d2 -> b2 01   (always enabled)
+ *                        - the five page-selector bail-outs are retargeted to the
+ *                          last-resort page block at 0x3d7fdf, so a page is always
+ *                          activated
+ *                        - UPC_POLITICS_PAGE=<hex>  (default 0x100) picks which page
+ *                          widget that block loads: the frame's own layout is
+ *                          0x100..0x148 (see the Init hash table below), and the
+ *                          right one for the politics panel is a live question.
+ *
+ * Every write verifies the bytes it expects first and refuses (logging why) if
+ * the exe is not the build these RVAs were derived from.
+ */
+#define POL_GATE_RVA        0x3fb8a7u   /* xor edx,edx */
+#define POL_GATE_COPY       2u
+#define POL_LASTPAGE_RVA    0x3d7fdfu   /* mov rdx,[rdi+0x100] ; jmp 0x3d80b6 */
+#define POL_LASTPAGE_DISP   0x3d7fe2u   /* the +0x100 inside that instruction */
+#define POL_SETCHILD_RVA    0xc8ee60u   /* SetActivatedChild(tab, page) */
+#define POL_SETCHILD_COPY   14u
+#define POL_TABSTATE_RVA    0xc39930u   /* thunk: mov rax,[rcx]; movzx edx,dl; jmp [rax+0x178] */
+
+static void politics_install(void);
+static void *g_setchild_orig = NULL;
+static int   g_pol_in_hook = 0;
+
+/* SetActivatedChild hook: log only, then run the real function. */
+static void __cdecl pol_setchild_hook(void *tab, void *page)
+{
+    if (!g_pol_in_hook && safe_readable(tab, 8)) {
+        g_pol_in_hook = 1;
+        probe_log("politics probe: SetActivatedChild(tab=%p, page=%p)%s",
+                  tab, page, page ? "" : "   <-- NO PAGE");
+        g_pol_in_hook = 0;
+    }
+    ((void (__cdecl *)(void *, void *))g_setchild_orig)(tab, page);
+}
+
+/* Ark tab-state thunk hook: log (widget, state), then do what the thunk did. */
+static void __cdecl pol_tabstate_hook(void *self, unsigned int state,
+                                     unsigned int a3, unsigned int a4)
+{
+    if (safe_readable(self, 8)) {
+        void **vt = *(void ***)self;
+        if (!g_pol_in_hook) {
+            g_pol_in_hook = 1;
+            probe_log("politics probe: tab widget %p state=%u (arg3=%u arg4=%u)%s",
+                      self, state & 0xffu, a3 & 0xffu, a4 & 0xffu,
+                      (state & 0xffu) ? "" : "   <-- DISABLED");
+            g_pol_in_hook = 0;
+        }
+        if (vt && safe_readable(vt, 0x180)) {
+            /* the thunk did `movzx edx, dl` before the tail jump, so only the
+             * low byte is meaningful */
+            ((void (__cdecl *)(void *, unsigned int, unsigned int, unsigned int))
+             vt[0x178 / 8])(self, state & 0xffu, a3, a4);
+            return;
+        }
+    }
+    probe_log("politics probe: tab state setter unresolvable for %p", self);
+}
+
+/* 14-byte entry hook with a relocated trampoline (same mechanics as the
+ * ostream<< hook). Returns the trampoline to call, or NULL. */
+static void *pol_entry_hook(unsigned long rva, const unsigned char *expect,
+                            void *hook_fn, const char *what)
+{
+    unsigned char *base = (unsigned char *)GetModuleHandleA(NULL);
+    unsigned char *target = base + rva;
+    unsigned char *tramp, *t;
+    unsigned char patch[POL_SETCHILD_COPY];
+    DWORD old = 0;
+
+    if (!safe_readable(target, POL_SETCHILD_COPY)) {
+        probe_log("%s: target %p unreadable - skipped", what, (void *)target);
+        return NULL;
+    }
+    if (memcmp(target, expect, POL_SETCHILD_COPY) != 0) {
+        probe_log("%s: prologue mismatch at %p (rva 0x%lx) - skipped, this exe is not "
+                  "the build the patch was derived from", what, (void *)target, rva);
+        return NULL;
+    }
+    tramp = (unsigned char *)VirtualAlloc(NULL, 64, MEM_COMMIT | MEM_RESERVE,
+                                          PAGE_EXECUTE_READWRITE);
+    if (!tramp) { probe_log("%s: VirtualAlloc failed", what); return NULL; }
+    memcpy(tramp, target, POL_SETCHILD_COPY);
+    t = tramp + POL_SETCHILD_COPY;
+    *t++ = 0xff; *t++ = 0x25;                       /* jmp qword ptr [rip+0] */
+    *(unsigned int *)t = 0; t += 4;
+    *(unsigned long long *)t = (unsigned long long)(uintptr_t)(target + POL_SETCHILD_COPY);
+
+    if (!VirtualProtect(target, POL_SETCHILD_COPY, PAGE_EXECUTE_READWRITE, &old)) {
+        probe_log("%s: VirtualProtect failed (%lu)", what, GetLastError());
+        return NULL;
+    }
+    memset(patch, 0x90, sizeof(patch));
+    patch[0] = 0xff; patch[1] = 0x25;
+    *(unsigned int *)(patch + 2) = 0;
+    *(unsigned long long *)(patch + 6) = (unsigned long long)(uintptr_t)hook_fn;
+    memcpy(target, patch, sizeof(patch));
+    VirtualProtect(target, POL_SETCHILD_COPY, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), target, sizeof(patch));
+    probe_log("%s: installed at %p (rva 0x%lx), trampoline %p", what,
+              (void *)target, rva, (void *)tramp);
+    return tramp;
+}
+
+/* 0F 84/8F rel32 -> same opcode, new displacement (verified against the
+ * original target first, so a different build cannot be retargeted by accident). */
+static int pol_retarget_jcc(unsigned long site, unsigned long expect_target,
+                            unsigned long new_target, const char *what)
+{
+    unsigned char *target = (unsigned char *)GetModuleHandleA(NULL) + site;
+    unsigned char cur[6], repl[6];
+    int rel;
+    long nrel;
+
+    if (!safe_readable(target, 6)) {
+        probe_log("%s: %p unreadable - skipped", what, (void *)target);
+        return 0;
+    }
+    memcpy(cur, target, 6);
+    if (cur[0] != 0x0f || (cur[1] != 0x84 && cur[1] != 0x8f &&
+                           cur[1] != 0x85 && cur[1] != 0x8e)) {
+        probe_log("%s: not a near conditional jump at %p (%02x %02x) - skipped",
+                  what, (void *)target, cur[0], cur[1]);
+        return 0;
+    }
+    rel = (int)((unsigned int)cur[2] | ((unsigned int)cur[3] << 8) |
+                ((unsigned int)cur[4] << 16) | ((unsigned int)cur[5] << 24));
+    if ((unsigned long)((long)site + 6 + rel) != expect_target) {
+        probe_log("%s: branch at 0x%lx goes to 0x%lx, expected 0x%lx - skipped",
+                  what, site, (unsigned long)((long)site + 6 + rel), expect_target);
+        return 0;
+    }
+    memcpy(repl, cur, 2);
+    nrel = (long)new_target - ((long)site + 6);
+    if (nrel < -0x7fffffffl || nrel > 0x7fffffffl) {
+        probe_log("%s: displacement out of range - skipped", what);
+        return 0;
+    }
+    {
+        int nr = (int)nrel;
+        repl[2] = (unsigned char)(nr & 0xff);
+        repl[3] = (unsigned char)((nr >> 8) & 0xff);
+        repl[4] = (unsigned char)((nr >> 16) & 0xff);
+        repl[5] = (unsigned char)((nr >> 24) & 0xff);
+    }
+    if (!gate_write(site, cur, repl, 6, 6)) {
+        probe_log("%s: write refused at 0x%lx", what, site);
+        return 0;
+    }
+    probe_log("%s: 0x%lx retargeted 0x%lx -> 0x%lx", what, site, expect_target, new_target);
+    return 1;
+}
+
+static void politics_probe_install(void)
+{
+    static const unsigned char setchild[POL_SETCHILD_COPY] = {
+        0x48, 0x89, 0x5c, 0x24, 0x18,   /* mov [rsp+0x18], rbx */
+        0x48, 0x89, 0x6c, 0x24, 0x20,   /* mov [rsp+0x20], rbp */
+        0x56,                           /* push rsi            */
+        0x57,                           /* push rdi            */
+        0x41, 0x56                      /* push r14            */
+    };
+    static const unsigned char tabstate[6] = {
+        0x48, 0x8b, 0x01,               /* mov rax, [rcx]      */
+        0x0f, 0xb6, 0xd2                /* movzx edx, dl       */
+    };
+    unsigned char jmp6[6] = { 0xe9, 0, 0, 0, 0, 0x90 };
+    unsigned char *site = (unsigned char *)GetModuleHandleA(NULL) + POL_TABSTATE_RVA;
+    long rel = (long)(uintptr_t)pol_tabstate_hook - (long)(uintptr_t)(site + 6);
+    int nr = (int)rel;
+
+    g_setchild_orig = pol_entry_hook(POL_SETCHILD_RVA, setchild,
+                                     (void *)pol_setchild_hook, "politics probe (SetActivatedChild)");
+    /* the thunk is a plain tail-jump, so it can be replaced by one near jump */
+    jmp6[1] = (unsigned char)(nr & 0xff);
+    jmp6[2] = (unsigned char)((nr >> 8) & 0xff);
+    jmp6[3] = (unsigned char)((nr >> 16) & 0xff);
+    jmp6[4] = (unsigned char)((nr >> 24) & 0xff);
+    {
+        int state_ok = gate_write(POL_TABSTATE_RVA, tabstate, jmp6, 6, 6);
+        if (!g_setchild_orig)
+            probe_log("politics probe (SetActivatedChild): not installed");
+        if (!state_ok)
+            probe_log("politics probe (tab state): not installed");
+        if (g_setchild_orig && state_ok)
+            probe_log("politics probe: BOTH hooks installed - open the Ark, hover the "
+                      "Politics tab, then read upc_stub.log / sdk_stream.log for "
+                      "'<-- DISABLED' / '<-- NO PAGE>'");
+        else
+            probe_log("politics probe: NOT active on this build (nothing was patched)");
+    }
+}
+
+static void politics_force_install(void)
+{
+    static const unsigned char gate_expect[POL_GATE_COPY] = { 0x33, 0xd2 };   /* xor edx,edx */
+    static const unsigned char gate_repl[POL_GATE_COPY]   = { 0xb2, 0x01 };   /* mov dl,1    */
+    char page_hex[16] = {0};
+    unsigned long page = 0x100;
+
+    int ok_gate, ok_pages = 0;
+
+    ok_gate = gate_write(POL_GATE_RVA, gate_expect, gate_repl, POL_GATE_COPY, POL_GATE_COPY);
+
+    /* A page must also be assigned, or the tab opens empty: the selector's five
+     * bail-outs are sent to the last-resort block, which loads [frame+page]. */
+    ok_pages += pol_retarget_jcc(0x3d7ef1u, 0x3d82e6u, POL_LASTPAGE_RVA,
+                                 "politics page (no session)");
+    ok_pages += pol_retarget_jcc(0x3d7efeu, 0x3d82e6u, POL_LASTPAGE_RVA,
+                                 "politics page (no world)");
+    ok_pages += pol_retarget_jcc(0x3d7f0eu, 0x3d82e6u, POL_LASTPAGE_RVA,
+                                 "politics page (no state object)");
+    ok_pages += pol_retarget_jcc(0x3d7f22u, 0x3d82d8u, POL_LASTPAGE_RVA,
+                                 "politics page (worlds > 1)");
+    ok_pages += pol_retarget_jcc(0x3d7f57u, 0x3d82d8u, POL_LASTPAGE_RVA,
+                                 "politics page (sessions > 1)");
+
+    if (GetEnvironmentVariableA("UPC_POLITICS_PAGE", page_hex, sizeof(page_hex)) > 0) {
+        char *end = NULL;
+        unsigned long v = strtoul(page_hex, &end, 16);
+        if (end && *end == 0 && v >= 0x80 && v <= 0x300) page = v;
+        else probe_log("politics: UPC_POLITICS_PAGE='%s' not a page offset - using 0x100",
+                       page_hex);
+    }
+    if (page != 0x100) {
+        unsigned char cur[4], repl[4];
+        unsigned char *t = (unsigned char *)GetModuleHandleA(NULL) + POL_LASTPAGE_DISP;
+        if (safe_readable(t, 4)) {
+            memcpy(cur, t, 4);
+            if (cur[0] == 0x00 && cur[1] == 0x01 && cur[2] == 0x00 && cur[3] == 0x00) {
+                repl[0] = (unsigned char)(page & 0xff);
+                repl[1] = (unsigned char)((page >> 8) & 0xff);
+                repl[2] = (unsigned char)((page >> 16) & 0xff);
+                repl[3] = (unsigned char)((page >> 24) & 0xff);
+                gate_write(POL_LASTPAGE_DISP, cur, repl, 4, 4);
+            }
+            else {
+                probe_log("politics: last-page displacement is %02x %02x %02x %02x, not "
+                          "+0x100 - page override skipped", cur[0], cur[1], cur[2], cur[3]);
+            }
+        }
+    }
+    if (ok_gate && ok_pages == 5)
+        probe_log("politics: FORCED ON (gate 0x3fb8a7 + %d/5 page bail-outs, page 0x%lx). "
+                  "The Patron and Senate text blocks need guilds a local world does not "
+                  "have, so expect them empty; UPC_POLITICS=probe logs what the game does.",
+                  ok_pages, page);
+    else
+        probe_log("politics: NOT fully applied (gate %s, page bail-outs %d/5) - this exe is "
+                  "not the build the RVAs were derived from, nothing else was touched",
+                  ok_gate ? "ok" : "refused", ok_pages);
+}
+
+static void politics_install(void)
+{
+    char mode[16] = {0};
+    if (!(GetEnvironmentVariableA("UPC_POLITICS", mode, sizeof(mode)) > 0) || !mode[0]) {
+        probe_log("politics: off (UPC_POLITICS=probe to log the Ark tab states, "
+                  "=on to force the Politics tab open - a CLIENT PATCH)");
+        return;
+    }
+    if (mode[0] == 'p' || mode[0] == 'P') { politics_probe_install(); return; }
+    if (mode[0] == 'o' || mode[0] == 'O' || mode[0] == '1') { politics_force_install(); return; }
+    probe_log("politics: unknown UPC_POLITICS='%s' (use probe or on)", mode);
 }
 
 /* short conditional jump (76/75 rel8) -> 2 x NOP : never take the fail branch */
