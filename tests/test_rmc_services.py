@@ -649,6 +649,9 @@ def main():
             rp["infoMails"] = {"7": 1, "9": 0}
             rp["settings"] = {"3": 40, "4": 1}
             rp["achievements"] = [{"id": 5, "value": 123456789}]
+            # the profile's five u32, in wire order (portrait/icon/colour/title/ark)
+            rp["portrait"], rp["icon"], rp["color"] = 1114881, 7, 1114803
+            rp["title"], rp["ark"] = 2330009, 42
             mails = decode_body(seam_split(PROFILE, "GetInfoMails_V1", rich)[1],
                                 ("map", "u32", "u8"))
             check("seam: GetInfoMails_V1 carries the store's mails",
@@ -669,9 +672,14 @@ def main():
                   repr(ach))
             prof = decode_body(seam_split(PROFILE, "GetPlayerProfile_V1", rich)[1],
                               LAYOUT[PROFILE + "::GetPlayerProfile_V1"])
-            check("seam: GetPlayerProfile_V1 is the real profile (not zeros)",
-                  prof[0] == rp.get("name", "Player") and prof[1] == rp["t0"],
-                  repr(prof)[:60])
+            # the five u32 are portrait, icon, colour, title(GUID), ark - they
+            # used to be sent as unix timestamps, which made the client resolve
+            # a nonsense portrait and show the default picture
+            check("seam: GetPlayerProfile_V1 carries the real profile fields",
+                  prof[0] == rp.get("name", "Player")
+                  and tuple(prof[1:6]) == tuple(
+                      rp.get(key, 0) for key in R.PROFILE_VALUE_FIELDS),
+                  repr(prof)[:80])
 
             # EVERY method: non-None, and its name block carries the '*' --
             # a fresh store each time, so no method can see another's writes
@@ -803,6 +811,12 @@ def main():
             # methods that write only when the request carries something: an
             # empty probe body is a valid "nothing to do" and saves nothing
             conditional = {PROFILE + "::SetArk_V1",    # writes only with items
+                           # the profile setters refuse a zero that would erase
+                           # a real value, so an empty probe writes nothing
+                           PROFILE + "::SetPortrait_V1",
+                           PROFILE + "::SetIcon_V1",
+                           PROFILE + "::SetColor_V1",
+                           PROFILE + "::SetPlayerTitle_V1",
                            # only a request that actually carries a list writes
                            PROFILE + "::SetArkItems_V1",
                            # writes only when the request carries rows: the

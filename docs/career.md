@@ -83,6 +83,23 @@ and (b) a client patch (see "Plan B") has something to paint.
    (the client sends it empty), and every `Upload*` went to a blind no-op that
    did not even read the body.
 
+## The profile itself (portrait, colour, title, ark)
+
+`GetPlayerProfile_V1` carries five u32 that are **not** timestamps - they are, in
+wire order, **portrait, icon, colour, title, ark**, i.e. the client's
+`SetProfileValue(kind)` order (`SetPortrait`/`SetIcon`/`SetColor`/
+`SetPlayerTitle`/`SetArk`, one u32 each). The old build sent creation times in
+the portrait slot, so the game resolved a nonsense portrait GUID and fell back to
+the default picture: the profile looked like it was not saved. It is served from
+the store now, survives a restart, and a login push of zeros cannot wipe it
+(the client pushes all five after every login).
+
+Two related corrections: `SetPlayerTitle_V1` carries a **u32 asset id** (it was
+read as a String), and `SetArk_V1` carries **one u32** (the ark id) - the
+16-byte item list is `SetArkItems_V1`. The "starting vehicle" has no profile
+field and no RPC at all (the profile page's `ShipGroup` reads a local property
+dataset), so it cannot be persisted through the online profile service.
+
 ## Why `GetStats_V1` is not the career store
 
 `StatsEntry` is 36 bytes: three u32 **key words** plus three u64 **counters**

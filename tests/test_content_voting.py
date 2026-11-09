@@ -411,10 +411,15 @@ def test_default_election():
     eq(info["running"], True, "bool f3 = 1 ('vote open', guess)")
     eq(cv.own_vote(info), -1, "own vote = -1 (not voted)")
     eq(info["f6"], -1, "spec f5 raw value -1")
-    eq(info["f9"], -1, "spec f8 = -1 (object-map key)")
+    # f9 is the FACTION of the incumbent (proven: 0/1/2 index the World Patron /
+    # FactionLeader tables, and the panel prints that name).  It must stay in
+    # 0..2: the client indexes an array with it and does not bounds-check.
+    eq(info["f9"], cv.incumbent_faction(info["id"], NOW),
+       "f9 = the faction holding the office (previous election's winner)")
+    eq(info["f9"] in cv.FACTIONS, True,
+       "the incumbent is a valid faction (an out-of-range f9 is an OOB read)")
     eq(info["f10"], -1, "spec f9 = -1 (table index, unguarded read)")
-    eq((info["f9"] & 0xFFFFFFFF, info["f10"] & 0xFFFFFFFF),
-       (0xFFFFFFFF, 0xFFFFFFFF), "the -1 pair encodes as 0xFFFFFFFF")
+    eq(info["f10"] & 0xFFFFFFFF, 0xFFFFFFFF, "f10 still encodes as 0xFFFFFFFF")
 
     # the window: three distinct packed dates, start <= now <= end < expire
     start = cv.unpacked_date(info["start"])
@@ -535,7 +540,8 @@ def test_wire_decode():
     eq(rec["f3"], 0, "wire f2 = 0")
     eq(rec["running"], 1, "wire f3 bool = 1")
     eq(rec["f6"], 0xFFFFFFFF, "wire f5 = 0xFFFFFFFF ('not voted')")
-    eq(rec["f9"], 0xFFFFFFFF, "wire f8 = 0xFFFFFFFF (null object key)")
+    eq(rec["f9"], cv.incumbent_faction(0, NOW),
+       "wire f9 = the incumbent faction (0..2)")
     eq(rec["f10"], 0xFFFFFFFF, "wire f9 = 0xFFFFFFFF (null table index)")
 
     start = ref_unpack(rec["start"])

@@ -397,6 +397,24 @@ def election_shares(slot=0, index=None):
     return fixed
 
 
+def election_winner(slot=0, index=None):
+    """The faction that won election ``index`` of ``slot`` (``max`` share)."""
+    if index is None:
+        index = election_index(slot)
+    shares = election_shares(slot, index)
+    return max(FACTIONS, key=lambda faction: (shares[faction], -faction))
+
+
+def incumbent_faction(slot=0, now=None):
+    """Who holds the office now: the winner of the PREVIOUS election.
+
+    A brand-new save has no history of its own, so the incumbent is simply the
+    previous cycle's drawn winner - which gives every fresh profile a plausible
+    president instead of an empty office (and it changes every cycle).
+    """
+    return election_winner(slot, election_index(slot, now) - 1)
+
+
 def election_electorate(slot=0, index=None):
     """How many votes the world casts over this election (``SIM_ELECTORATE``)."""
     if index is None:
@@ -486,7 +504,12 @@ def default_election(now=None, key=0, vote_id=None, running=True,
         "f6": int(own_vote),                              # spec f5, own vote / -1
         "votesA": packed_date(window["end"]),             # spec f6, packed Date
         "votesB": packed_date(window["expire"]),          # spec f7, packed Date
-        "f9": FACTION_INVALID,                            # spec f8, object-map key
+        # f9 is the FACTION index, proven from the client: 0/1/2 select the
+        # World Patron / FactionLeader entry and therefore the name the panel
+        # prints ("President of the World Council: <name>").  It is the winner
+        # of the previous election, so a fresh save has a plausible incumbent;
+        # -1 would render nothing and anything > 2 is an unguarded array read.
+        "f9": int(incumbent_faction(key, now)),
         "f10": FACTION_INVALID,                           # spec f9, table index
     }
 

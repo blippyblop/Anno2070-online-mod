@@ -73,6 +73,24 @@ senate         : your vote Eco   (336 counted, 116/170/50, 13% of election 104)
 World Council  : your vote Tech  (1015 counted, 631/62/322, 63% of election 44)
 ```
 
+## The incumbent (who holds the office now)
+
+`VotingInfo.f9` is the **faction** of the sitting office holder - proven from the
+client: 0/1/2 index the `WorldPatron` / `FactionLeader` tables in the game-config
+struct, and the council panel prints "President of the World Council: <name>" from
+that entry in *both* phases (the names come from the client's own data: Eco →
+Seamus Green, Tycoon → Skylar Banes, Tech → F.A.T.H.E.R.). We serve the winner of
+the **previous** election, so a brand-new save still has a plausible incumbent and
+the office changes hands as cycles roll. `-1` would render nothing, and anything
+outside 0..2 is an unguarded array read in the client - the one value that can
+crash it, so the server keeps it a faction.
+
+The *senate* page has no equivalent line while a vote is open: `f3 = 0` swaps in
+the "Election result: <topic>" block and takes the vote buttons away with it, and
+the retail `[SENATE_VOTE_WINNER]` placeholder is filled by the backend's own HTML,
+never by the client. So the senate keeps `f3 = 1` (vote live) and the office is
+shown on the council page.
+
 ## The one thing that means "you already voted"
 
 **f5 only.** Both frames convert the document into a game struct

@@ -965,6 +965,78 @@ def content_voting_docs(state):
                                                        voter="default").items()}
 
 
+
+
+def test_profile_survives_a_restart(tmp):
+    """Portrait, icon, colour, title and ark must come back after a restart."""
+    print("the whole player profile persists (portrait, colour, title, ark)")
+    path = os.path.join(tmp, "profile.json")
+    store = R.open_store(path)
+
+    # what the client sends when the player picks these in the UI: one u32 each
+    chosen = {"portrait": 1114881, "icon": 7, "color": 1114803,
+              "title": 2330009, "ark": 42}
+    for key, value in chosen.items():
+        method = {"portrait": "SetPortrait_V1", "icon": "SetIcon_V1",
+                  "color": "SetColor_V1", "title": "SetPlayerTitle_V1",
+                  "ark": "SetArk_V1"}[key]
+        payload(PROFILE, method, store, le32(value))
+
+    raw = body_of(PROFILE, "GetPlayerProfile_V1", store)
+    off = 2 + int.from_bytes(raw[:2], "little")        # skip the name String
+    values = [int.from_bytes(raw[off + 4 * i: off + 4 * i + 4], "little")
+              for i in range(5)]
+    check("GetPlayerProfile serves portrait/icon/colour/title/ark in order",
+          values == [chosen[k] for k in R.PROFILE_VALUE_FIELDS],
+          (values, R.PROFILE_VALUE_FIELDS))
+
+    reopened = R.open_store(path)
+    doc = R._profile_document(reopened.player("default"))
+    check("... and they are still there after a restart",
+          doc["values"] == [chosen[k] for k in R.PROFILE_VALUE_FIELDS], doc)
+    check("the profile name survives too", doc["name"] == "Player", doc["name"])
+
+    # the client pushes all five at login; a zero must never erase a real value
+    for method in ("SetPortrait_V1", "SetIcon_V1", "SetColor_V1",
+                   "SetPlayerTitle_V1", "SetArk_V1"):
+        payload(PROFILE, method, reopened, le32(0))
+    doc = R._profile_document(reopened.player("default"))
+    check("a login push of zeros cannot wipe the profile",
+          doc["values"] == [chosen[k] for k in R.PROFILE_VALUE_FIELDS], doc)
+
+    # SetArk_V1 is the profile's ark id when it carries one u32, and the older
+    # item-delta when it carries a record list
+    box_before = list(reopened.player("default")["arkItems"])
+    payload(PROFILE, "SetArk_V1", reopened, le32(99))
+    check("SetArk_V1 with one u32 sets the ark id, not the item box",
+          reopened.player("default")["ark"] == 99
+          and reopened.player("default")["arkItems"] == box_before,
+          (reopened.player("default")["ark"], len(box_before)))
+
+    # an older save stored the title as a String and creation times in the
+    # portrait slots; both are migrated instead of served as garbage
+    legacy_path = os.path.join(tmp, "profile-legacy.json")
+    with open(legacy_path, "w", encoding="utf-8") as fh:
+        json.dump({"schema": 2, "players": {"default": {
+            "name": "Player", "t0": 1794164427, "t1": 1794164427,
+            "t2": 0, "t3": 0, "v5": 0, "title": "Admiral"}}}, fh)
+    migrated = R.open_store(legacy_path).player("default")
+    check("a legacy String title moves out of the u32 slot",
+          migrated["title"] == 0 and migrated.get("titleText") == "Admiral",
+          (migrated["title"], migrated.get("titleText")))
+    check("the old timestamp keys are gone",
+          not any(k in migrated for k in ("t0", "t1", "t2", "t3", "v5")),
+          sorted(k for k in migrated if k.startswith("t")))
+
+    # settings and key bindings ride the same store
+    payload(PROFILE, "SetSetting_V1", store, le32(11) + le32(3))
+    payload(PROFILE, "SetKeyBinding_V1", store, le32(4) + le32(5) + le32(6) + le32(7))
+    again = R.open_store(path)
+    settings = again.player("default")["settings"]
+    check("a game setting (e.g. the start ship slot) persists",
+          int(settings.get(11, settings.get("11", -1))) == 3, settings)
+
+
 def main():
     tmp = tempfile.mkdtemp(prefix="anno-statefix-")
     try:
@@ -983,6 +1055,7 @@ def main():
         test_campaign_month()
         test_the_request_prologue(tmp)
         test_council_vote_survives_a_restart(tmp)
+        test_profile_survives_a_restart(tmp)
         test_statistics_persist(tmp)
         test_reputation_never_goes_backwards(tmp)
         test_campaign_payout(tmp)

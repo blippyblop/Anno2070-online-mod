@@ -406,6 +406,21 @@ def _migrate_state(state):
             if isinstance(mails, dict) and any(isinstance(k, str) for k in mails):
                 doc["infoMails"] = {int(k): v for k, v in mails.items()
                                     if str(k).lstrip("-").isdigit()}
+            # profile: the old build stored the title as a String in "title"
+            # (it is a u32 asset id) and kept creation times in the slots the
+            # client reads as portrait/icon - move both out of the way
+            if isinstance(doc.get("title"), str):
+                if doc["title"] and not doc.get("titleText"):
+                    doc["titleText"] = doc["title"]
+                doc["title"] = 0
+            for stale in ("t0", "t1", "t2", "t3", "v5"):
+                doc.pop(stale, None)
+            for key in PROFILE_VALUE_FIELDS:
+                if not isinstance(doc.get(key), int):
+                    try:
+                        doc[key] = int(doc.get(key) or 0)
+                    except (TypeError, ValueError):
+                        doc[key] = 0
             rep = doc.get("reputation")
             if not isinstance(rep, dict):
                 doc["reputation"] = {}
@@ -422,8 +437,18 @@ def _migrate_state(state):
 
 _PLAYER_DEFAULTS = {
     "name": "Player",
-    "t0": 0, "t1": 0, "t2": 0, "t3": 0, "v5": 0,
-    "listA": [], "listB": [], "title": "",
+    # The five u32 of the PlayerProfile wire record are NOT timestamps: the
+    # client's completion callback (FUN_140db3070) fills a vector with them in
+    # wire order and exposes it by index to SetProfileValue(kind), where
+    # kind 0..4 = Portrait, Icon, Colour, Title, Ark (the setter switch
+    # FUN_140daaeb0 sends SetPortrait/SetIcon/SetColor/SetPlayerTitle/SetArk).
+    # Sending unix seconds here (what t0/t1 used to be) made the client resolve
+    # a nonsense portrait GUID and show the default picture.
+    "portrait": 0, "icon": 0, "color": 0, "title": 0, "ark": 0,
+    "listA": [], "listB": [],
+    # the 9th wire field is an unidentified wstring; the player's *title* is a
+    # u32 asset id above, so this is kept apart from it
+    "titleText": "",
     # PN 148: an ArkItem is {socket_quality, socket_index, item_id, count} - NOT
     # opaque ids. Quality 1/2/3 = sockets A/B/C (the Ark asset declares A:1, B:2,
     # C:3), the index is the 0-based socket ordinal within that group, item_id is
@@ -700,16 +725,68 @@ def h_get_status(store, r, ctx):
     return _reply(PROFILE, "GetStatus_V1", status=p.get("status", 0))
 
 
+#: The five u32 of the PlayerProfile record, in wire order (+0x10..+0x20).
+PROFILE_VALUE_FIELDS = ("portrait", "icon", "color", "title", "ark")
+
+
+def _profile_document(player_doc):
+    """The ``PlayerProfile`` fields this server serves, from a player record.
+
+    Field order is the client's own (proven):
+    portrait, icon, colour, title, ark - then the two ``list<u32>`` and the
+    unidentified trailing string.  Everything is opaque data from the client's
+    point of view (asset GUIDs / ids), so it is echoed, never interpreted.
+    """
+    def as_int(key):
+        try:
+            return int(player_doc.get(key) or 0) & 0xFFFFFFFF
+        except (TypeError, ValueError):
+            return 0
+
+    return {
+        "name": player_doc.get("name", "Player"),
+        "values": [as_int(key) for key in PROFILE_VALUE_FIELDS],
+        "list_a": player_doc.get("listA", []),
+        "list_b": player_doc.get("listB", []),
+        "tail": str(player_doc.get("titleText") or ""),
+    }
+
+
+def _set_profile_value(store, ctx, key, value):
+    """Store one profile u32, refusing a zero that would erase a real value.
+
+    The client pushes all five values right after login (observed:
+    SetArk, SetIcon, SetColor, SetPortrait, SetPlayerTitle).  If our profile
+    reply was wrong or simply arrived late, that push carries zeros and would
+    wipe a portrait/colour the player had chosen - so a zero never overwrites a
+    non-zero.  There is no "reset to default" in the UI, so nothing is lost.
+    """
+    p = store.player(_ctx_pid(ctx))
+    try:
+        value = int(value) & 0xFFFFFFFF
+    except (TypeError, ValueError):
+        value = 0
+    current = 0
+    try:
+        current = int(p.get(key) or 0) & 0xFFFFFFFF
+    except (TypeError, ValueError):
+        current = 0
+    if value == 0 and current:
+        if LOG is not None:
+            LOG("profile: ignored a zero %s (stored %d)" % (key, current))
+        return current
+    p[key] = value
+    store.save()
+    if LOG is not None and value != current:
+        LOG("profile: %s %d -> %d" % (key, current, value))
+    return value
+
+
 def h_get_player_profile(store, r, ctx):
     p = store.player(_ctx_pid(ctx))
     p["lastLogin"] = int(time.time())
     return _reply(PROFILE, "GetPlayerProfile_V1",
-                  name=p.get("name", "Player"),
-                  values=[p.get("t0", 0), p.get("t1", 0), p.get("t2", 0),
-                          p.get("t3", 0), p.get("v5", 0)],
-                  list_a=p.get("listA", []),
-                  list_b=p.get("listB", []),
-                  tail=p.get("title", ""))
+                  **_profile_document(p))
 
 
 def h_create_player_profile(store, r, ctx):
@@ -720,14 +797,8 @@ def h_create_player_profile(store, r, ctx):
     store.save()
     # Result(String + u16) + PlayerProfile + map<u32,bool>
     return _reply(PROFILE, "CreatePlayerProfile_V1",
-                  msg="", kind=0,
-                  name=p.get("name", "Player"),
-                  values=[p.get("t0", 0), p.get("t1", 0), p.get("t2", 0),
-                          p.get("t3", 0), p.get("v5", 0)],
-                  list_a=p.get("listA", []),
-                  list_b=p.get("listB", []),
-                  tail=p.get("title", ""),
-                  mails=_int_keyed(p.get("infoMails", {})))
+                  msg="", kind=0, mails=_int_keyed(p.get("infoMails", {})),
+                  **_profile_document(p))
 
 
 def h_does_user_exist(store, r, ctx):
@@ -735,27 +806,37 @@ def h_does_user_exist(store, r, ctx):
 
 
 def h_set_portrait(store, r, ctx):
-    store.player(_ctx_pid(ctx))["portrait"] = r.u32()
-    store.save()
+    """``SetPortrait_V1``: one u32 (an asset GUID) -> void."""
+    _set_profile_value(store, ctx, "portrait", r.u32())
     return _reply(PROFILE, "SetPortrait_V1")
 
 
 def h_set_icon(store, r, ctx):
-    store.player(_ctx_pid(ctx))["icon"] = r.u32()
-    store.save()
+    """``SetIcon_V1``: one u32 -> void."""
+    _set_profile_value(store, ctx, "icon", r.u32())
     return _reply(PROFILE, "SetIcon_V1")
 
 
 def h_set_color(store, r, ctx):
-    store.player(_ctx_pid(ctx))["color"] = r.u32()
-    store.save()
+    """``SetColor_V1``: one u32 -> void."""
+    _set_profile_value(store, ctx, "color", r.u32())
     return _reply(PROFILE, "SetColor_V1")
 
 
 def h_set_player_title(store, r, ctx):
-    p = store.player(_ctx_pid(ctx))
-    p["title"] = r.string() if r.remaining() else ""
-    store.save()
+    """``SetPlayerTitle_V1``: one u32 (the title's asset GUID) -> void.
+
+    It used to be read as a String, which turned the four bytes into a bogus
+    u16 length and stored garbage - titles are GUIDs, per the client's own
+    writer (``FUN_140deb2e0``: a single fixed-width 4-byte field).
+    """
+    if r.remaining() >= 4:
+        _set_profile_value(store, ctx, "title", r.u32())
+    elif r.remaining():
+        # a String body from an older client: keep it, but out of the u32 slot
+        p = store.player(_ctx_pid(ctx))
+        p["titleText"] = r.string()
+        store.save()
     return _reply(PROFILE, "SetPlayerTitle_V1")
 
 
@@ -790,21 +871,26 @@ def h_set_ark_items(store, r, ctx):
 
 
 def h_set_ark(store, r, ctx):
-    """SetArk_V1: a DELTA against the box, not a replacement (PN 150).
+    """``SetArk_V1`` has TWO shapes, and they must not be confused.
 
-    The client sends the same 16-byte record but reads it as a map entry:
-    key = (w0, w1) = (socket_quality, socket_index), value = (w2, w3) =
-    (item_id, count), and **w3 == 0 means "skip this entry"** - that is how the
-    client signals "no change" (decomp/_adhoc/ark-ids.md, the writer/reader pair
-    around FUN_140db2520). Two bugs are fixed here:
-      * it REPLACED the whole box with the delta's entries (so a one-socket delta
-        wiped the other five sockets);
-      * it did not honour w3 == 0, so a "skip" entry overwrote a real stack with
-        an item of count 0.
-    An empty request is still a no-op (never an accidental clear: that is
-    SetArkItems_V1 with an empty list).
+    **The profile field (kind 4, "Ark").**  ``CPlayerProfileServiceImpl::
+    SetProfileValue(4, id)`` sends ONE u32 - the ark/ship asset id of the
+    player's profile (writer ``FUN_140deb4c0``: a single fixed-width field).
+    That is what this handler stores, and it is what makes the profile's fifth
+    value survive a restart.
+
+    **A legacy item delta.**  An older build of this server treated a 16-byte
+    record list here as an ArkItem delta to merge into the box; the real
+    ``list<ArkItem>`` call is ``SetArkItems_V1``.  A body longer than 4 bytes is
+    still accepted with that older meaning, so nothing that worked breaks: the
+    key is (socket_quality, socket_index), the value (item_id, count), and
+    ``count == 0`` means "skip".  It merges (never replaces), so a one-socket
+    delta cannot wipe the other sockets.
     """
     p = store.player(_ctx_pid(ctx))
+    if r.remaining() <= 4:
+        _set_profile_value(store, ctx, "ark", r.u32())
+        return _reply(PROFILE, "SetArk_V1")
     delta = read_ark_items(r)
     if not delta:
         return _reply(PROFILE, "SetArk_V1")
@@ -815,7 +901,7 @@ def h_set_ark(store, r, ctx):
     changed = False
     for ent in delta:
         _w = _ark_words(ent)
-        if _w[3] == 0:                              # w3 == 0 -> skip
+        if _w[3] == 0:                              # count 0 -> skip
             continue
         box[(_w[0], _w[1])] = _w
         changed = True

@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.1.4 - 2026-11-09
+
+Fixed
+- **The profile was never really saved.** `GetPlayerProfile_V1`'s five u32 are
+  portrait, icon, colour, title and ark (the client's `SetProfileValue` order),
+  but we sent creation timestamps in the portrait slot - so the game resolved a
+  nonsense portrait GUID, fell back to the default picture, and the player's
+  choice looked unsaved. They are served from the store now, survive a restart,
+  and a login push of zeros can no longer wipe them. `SetPlayerTitle_V1` is a
+  **u32** (it was read as a String, i.e. garbage) and `SetArk_V1` is **one u32**
+  (the ark id; the 16-byte item list is `SetArkItems_V1`). Old saves are migrated
+  (the String title moves to `titleText`, the timestamp keys are dropped).
+  The "starting vehicle" is *not* part of the profile service (no field, no RPC),
+  so it cannot be persisted this way - documented in `docs/career.md`.
+- **A fresh save now has an incumbent.** `VotingInfo.f9` is the sitting office
+  holder's **faction**: the client indexes its own WorldPatron / FactionLeader
+  tables with it and prints "President of the World Council: <name>" from that
+  entry, in both phases. We serve the winner of the previous election (which is
+  drawn per cycle), so a new profile still has a plausible president, and the
+  office changes hands as the cycles roll. Values stay inside 0..2 - that array
+  read is unguarded in the client.
+
 ## 0.1.3 - 2026-11-09
 
 Added
