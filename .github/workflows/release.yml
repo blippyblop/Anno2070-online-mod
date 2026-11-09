@@ -36,11 +36,26 @@ jobs:
       - name: Build the launcher and the installer
         run: powershell -ExecutionPolicy Bypass -File packaging/build-exes.ps1
 
+      # The supported build: extract it into the game folder and double-click
+      # PLAY.bat.  It is generated from the same tree the exes come from, so it
+      # cannot drift; the layout check in the script lets it run from here
+      # (packaging/) instead of the development tree (tools/).
+      - name: Build the PLAY.bat package (the supported build)
+        shell: python
+        run: |
+          import subprocess, sys, os
+          out = os.path.join('dist', 'Anno2070Online-playbat-%s.zip' % os.environ['GITHUB_REF_NAME'])
+          sys.exit(subprocess.call([sys.executable, 'packaging/make_playbat_zip.py',
+                                    '--out', out]))
+        env:
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+
       - name: Package portable build + checksums
         shell: pwsh
         run: |
           Compress-Archive -Path dist/Anno2070Online -DestinationPath dist/Anno2070Online-portable.zip
           $files = @(
+            "dist/Anno2070Online-playbat-$env:GITHUB_REF_NAME.zip",
             'dist/Anno2070Online-Setup.exe',
             'dist/Uninstall-Anno2070Online.exe',
             'dist/Anno2070Online-portable.zip'
@@ -105,6 +120,8 @@ jobs:
         with:
           name: anno2070-online-windows
           path: |
+            dist/Anno2070Online-playbat-*.zip
+            dist/Anno2070Online-playbat-*.zip
             dist/Anno2070Online-Setup.exe
             dist/Uninstall-Anno2070Online.exe
             dist/Anno2070Online-portable.zip
@@ -120,29 +137,55 @@ jobs:
           body: |
             Local replacement for the shut-down Anno 2070 online backend.
 
-            **Install:** download `Anno2070Online-Setup.exe`, run it, enter your
-            player name, then start the game from the new
-            "Anno 2070 - Local Online" shortcut. No Python needed.
+            **Use `Anno2070Online-playbat-vX.Y.Z.zip` - it is the supported
+            build.** Extract it so you end up with
+            `...\Anno 2070\Anno2070Online\PLAY.bat` next to `Anno5.exe`,
+            install Python 3.8+ once (tick *Add python.exe to PATH*), then
+            double-click `PLAY.bat`:
 
-            **Portable:** `Anno2070Online-portable.zip` is the same runtime
-            unpacked - unzip anywhere and run `Anno2070Online.exe`.
+            ```
+            ...\Anno 2070\Anno5.exe
+            ...\Anno 2070\Anno2070Online\PLAY.bat      <- double-click this
+            ```
 
-            **Uninstall:** run `Uninstall-Anno2070Online.exe` (it is also in the
-            Start Menu). It puts Ubisoft's original loader DLL back, keeps your
-            saved online state in `%LOCALAPPDATA%\Anno2070Online-backup`, and
-            removes the shortcuts. `--purge` throws the state away too.
-            Nothing in your savegames is touched.
+            It needs no admin rights and modifies no game file: `INSTALL.bat`
+            puts the loader DLL next to `Anno5.exe` (keeping Ubisoft's original
+            as a backup) and `PLAY.bat` starts the local server once, then the
+            game.
 
-            **Verify:** `SHA256SUMS.txt` has the hashes of both files.
+            **Experimental, kept for the record:** `Anno2070Online-Setup.exe`
+            (installs to `%LOCALAPPDATA%`, no Python needed),
+            `Anno2070Online-portable.zip` (the same runtime unpacked) and
+            `Uninstall-Anno2070Online.exe`. These are built by CI on every tag
+            but their launcher has not been shown to behave like `PLAY.bat`, so
+            prefer the PLAY.bat zip.
 
-            What works: online session, ARK item box, senate and World Council
-            elections and votes, world events, profile, chat/friends/mail.
-            Known limits: about 1 launch in 3 hits a client-side bootstrap crash
-            (the launcher retries automatically), and conquest/multiplayer is
-            not reachable yet. See `docs/known-issues.md` in the source.
+            **Uninstall:** `UNINSTALL.bat` in the package (or
+            `Uninstall-Anno2070Online.exe` for the .exe build). It restores
+            Ubisoft's original `upc_r2_loader64.dll`, keeps your online state in
+            `%LOCALAPPDATA%\Anno2070Online-backup` and removes the shortcuts.
+            `/purge` drops the state too. Your savegames are never touched.
+
+            **Verify:** `SHA256SUMS.txt` has the hash of every file;
+            `SELFTEST.bat` runs a full fake session in a temp folder (career,
+            ARK, events, mail, restart) and never touches your save;
+            `PROGRESS.bat` prints what was saved and probes the running server.
+
+            What works: online session, career reputation (votes, missions,
+            campaign tiers, daily quests, election gifts - all persisted), ARK
+            item box, senate and World Council elections with a simulated
+            electorate, month-long world events whose bar is a feed of mission
+            completions (including your own), profile, chat/friends/mail,
+            achievements, statistics.
+
+            Known limits: about 4 launches in 10 come up offline (quit from the
+            menu and start again; nothing is lost), the Ark Politics tab is
+            gated client-side, and conquest/multiplayer is not reachable. See
+            `docs/known-issues.md` in the source.
 
             Not affiliated with Ubisoft. Contains no game code, data or assets.
           files: |
+            dist/Anno2070Online-playbat-*.zip
             dist/Anno2070Online-Setup.exe
             dist/Uninstall-Anno2070Online.exe
             dist/Anno2070Online-portable.zip
