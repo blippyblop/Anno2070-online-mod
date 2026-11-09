@@ -117,51 +117,76 @@ may warn or quarantine it. Build the loader yourself from
 
 **Symptom:** the Ark's **Politics** tab cannot be opened; hovering shows that.
 
-**Verdict (2026-11-09, proven from the binary): the gate is entirely client-side
-and reads nothing that comes from a server reply.** The Ark window is
-`CObjectmenuArkFrame` (RTTI `.?AVCObjectmenuArkFrame@@`, vtable `0x167c670`, its
-`Init` virtual at **`0x3d65a0`**). `Init` caches the three tab widgets; the
-politics tab is `GetChildByHash(0x551c36f7)` stored at `frame+0x108`. The page is
-assigned by `FUN_1403d7ec0`:
+**Verdict (2026-11-09, re-derived from the binary after the "but the wiki says it
+works in continuous games" objection): the tab is enabled by local world/slot/UI
+state only - no server reply, document or session parameter reaches the
+condition.** The wiki's "politics powers are only available in Continuous
+gameplay" does **not** correspond to any game-mode, DLC or campaign check in this
+build, which is why starting a continuous game changed nothing.
+
+### Where the tab is enabled (this is the real gate)
+`CObjectmenuArkFrame::Update` is `.pdata` range `0x3fa830-0x3fb9ac`. The politics
+widget - `GetChildByHash(0x551c36f7)`, cached at `frame+0x108` by `Init`
+(`0x3d65a0`) - gets its state from exactly this computation, once per update:
 
 ```
-0x3d7ef1  je 0x3d82e6   ; no game session            -> no page
-0x3d7efe  je 0x3d82e6   ; no world ([session+0x60])   -> no page
-0x3d7f0e  je 0x3d82e6   ; no politics object          -> no page
-                        ;   ([world+0x260] == NULL)
-0x3d7f1b  cmp [CWorldManager+0x3f0], 1 ; jg -> no page
-0x3d7f57  cmp (vector count), 1        ; jg -> no page
-          ; ...then a 27-entry jump table picks the page widget
-0x3d80b6  SetActivatedChild(tab, page)
-0x3d82d8  SetActivatedChild(tab, NULL)     <- what a local world hits
+0x3fb865  rax = [rsp+0x38]                       ; player-slot object, see below
+0x3fb86a  test rax,rax          ; je  -> disable
+0x3fb86f  cmp byte [rax+0x1c],0 ; jne -> disable
+0x3fb875  rax = [CAccess]                        ; 0x1BA1428 singleton
+0x3fb87c  rcx = (int)[rax+0x180]                 ; active world slot, 0..30
+0x3fb883  cmp ecx,0x1e          ; ja  -> disable
+0x3fb888  rax = [rax+0x1e0]                      ; world* array
+0x3fb894  cmp rdx=[rsp+0x28], [rax+rcx*8] ; jne -> disable   ; this Ark's world must be the active one
+0x3fb89a  cmp byte [rbp+0x258],0 ; jne -> disable            ; UI page flag
+0x3fb8a3  mov dl,1        | 0x3fb8a7  xor edx,edx            ; enabled / disabled
+0x3fb8a9  rcx = [r14+0x108] ; call [vtable+0x198](state=dl, 1, 0)
 ```
 
-`SetActivatedChild` is `0x140c8ee60`; "no page" is what renders as disabled, and
-the engine derives the disabled tooltip by adding `0x989680` (10,000,000) to the
-normal one (proven at `0x3de73e`), which is why the hover text is loca
-**21412007** - the disabled variant of 11412007 "Politics - Left click to view
-the current World Patron and voting results of the Senate".
+`[rsp+0x28]` = `[CAccess+0x1e0][ [world+0x58]*8 ]` (the world registered under
+this world's own id); `[rsp+0x38]` = `[world+0x20][ [[world+0x60]+0x374] ]`,
+bounds-checked against `[[world+0x60]+0x360]`. The callee slot `+0x198` is a thunk
+`0xc39930 -> [rax+0x178]`, body **`0xc393a0`** = the GUI state/setter
+(`[this+0x3b4] = r9b`, state field `[this+0x1e0] = 0..3`). `[world+0x258]` is 0
+normally and set to 1 at `0x3fae18` only while the current page id is one of
+{8,18,19,21,28} (`bt 0x102c0000,ebx`).
 
-**So:** no RMC reply, no `VotingInfo` field and no profile/document value can
-open it (the callee list of `FUN_1403d7ec0` contains no service or document
-reader at all). The two "serve a vote result / serve the patron GUID"
-experiments previously listed here are **dead ends** - `VotingInfo.f9` only
-feeds the *content* of the council page, never this tab's availability.
+**Every input is a local object-graph field**: the player-slot pointer, one byte
+on it, `CAccess`'s active-world index/array, the world id, and a UI page flag.
+No `RMC`/SDK/document reader appears anywhere in this function or in its callees.
 
-**What the tab would show if forced open:** the `ARK_POLITICS_PANEL` page with a
-World Patron block (needs `m_WorldPatronGUID`, texts 1000798/1000799), a Senate
-block (needs `m_SenateEffectGUID`, texts 1000761/62/65) and four
-`ARK_PATRON_ACTION1..4` buttons that are *item activations* from the Ark's own
-box (so those would work). In a local single-player world both GUIDs are 0, so
-the two text blocks stay empty.
+### What the page selector does (content, not availability)
+`FUN_1403d7ec0` picks *which* page the tab shows, and returns "no page" (NULL, at
+`0x3d82d8`) when: no session; `[session_lookup+0x60]` null; `[[..]+0x260]` null;
+`[CWorldManager+0x3f0] > 1` (more than one world registered); or
+`[CAccess+0x208]->[+0x78]` vector count `> 1`. Otherwise `[[..+0x260]+0x14]`,
+a 27-entry enum (3..0x1e, jump table at `0x3d82f8`/`0x3d8318`), chooses the page.
+`[x+0x260]` is **not** resolved: no store with displacement `0x260` exists anywhere
+in `.text` (function-bounded capstone sweep), so it is written by a bulk copy or
+through a computed index; the related value read at `0x3fb442` is matched against
+a 12-entry table at `0x1BA2A08+0x5df0`, i.e. it smells like a *scenario/world-type*
+id rather than an online object. So the earlier "the world has no politics object"
+wording was a guess; what is proven is only that the page lookup needs that field.
 
-**The only route, if it is ever wanted** (client patch - our loader already
-patches client defects): first hook `0x1403d7ec0` and log
-`[CWorldManager+0x3f0]`, `[CGameEngine+0x208]`, `[session+0x60]`,
-`[[session+0x60]+0x260]`, `[frame+0x108]`, `[[frame+0x108]+0x27c]` and
-`[[frame+0x108]+0x380]` - one session tells us which of the five conditions
-actually trips. Then either trampoline `0x3D82D8` to call
-`SetActivatedChild(tab, [frame+0x100])` instead of `NULL`, or - if it is the
-widget's own disabled bit - clear bit 28 of `tab+0x27c` and set the tooltip back
-to `0xAE2227` (11412007). Both are 6-14 byte patches inside the Ark window's own
-update, trivially reversible.
+### Why no server can fix it
+The tab's disabled tooltip is the widget's own disabled state (`+0x989680` added at
+`0x3de73e`), i.e. `dl=0` from `0x3fb8a7` - not "no page". The condition that
+produces `dl=0` contains no network data: serving a different `VotingInfo`, a
+patron GUID, a session flag or a document cannot change it. `VotingInfo.f9`
+(incumbent) only fills the *content* of the council page.
+
+### If it is ever wanted (client patch, in the loader)
+* cheapest, 2 bytes: at **`0x3fb8a7`** replace `33 d2` (`xor edx,edx`) with
+  `b2 01` (`mov dl,1`) - the politics widget then always gets state 1. Side
+  effects: the tab shows even when the world is not the active one; the page may
+  still be NULL on a world whose `+0x260` is null (then it opens empty).
+* or patch `0x3D82D8`'s call to pass `[frame+0x100]` instead of NULL.
+* ship it as an opt-in `upc_r2_loader64.dll` patch (env/flag), never default:
+  the tab's content needs `m_WorldPatronGUID` / `m_SenateEffectGUID`, both 0 in a
+  local world, so two of its three blocks would be empty.
+
+**One experiment left (needs the game):** in a continuous game, log at `0x3fb865`
+the five inputs (`[rsp+0x38]`, `[+0x1c]`, `[CAccess+0x180]`, `[world+0x58]`,
+`[world+0x258]`). The only one whose writer is not traced is the player-slot byte
+`+0x1c`; if it turns out to be session-derived (e.g. "slot is a remote player"),
+that is the single place a server could ever matter. Everything else is local.
