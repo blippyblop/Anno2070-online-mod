@@ -11,28 +11,19 @@ This is not fully tested so if you find features that don't work that should; or
 Currently working (verified in game, v0.1.9):
 
 * Elections - senate and World Council, with a simulated electorate and an
-  incumbent; your vote survives a restart
-* Ark storage - items in the socket group of their quality; a login never wipes
-  the box; missions pay their items
-* Profile - portrait, icon, colour, title, ark
-* Career progression - votes, event missions, campaign tiers, daily quests and
-  the election gift, all written to `server\state.json` and served back
-* Event Quests - a month-long campaign per chapter, with a feed of fictional
-  players beating its missions *and your own completions* making up the
-  100,000..125,000 point world total
-* Mail, chat, friends, achievements, statistics
+  incumbent.
+* Ark storage - items shoukd be there - unlocking one and saving it is untested but should work. i need to play the game to get some scientists.
+* Profile - portrait and color and stuff
+* Career progression
+* Event Quests - with simulated other players so you actually get the world reward
+* Achievements/statistica
 
 Not working:
 
-* The Ark Politics tab - gated client-side on a world object only a genuine
-  continuous-world session creates (`docs/known-issues.md` #10)
-* Multiplayer / conquest
+* The Ark Politics tab - trying to figure out why this doesnt work in continuous mode
+* Multiplayer / conquest - maybe one day but hosting a server others use is another ballpark entirely.
 
 
-> Status detail: the online session, ARK, elections/votes, world events and the
-> profile are verified in game (a full session answers 25-75 service calls with
-> zero failed replies). Multiplayer stays out of reach for the reason explained
-> in `docs/known-issues.md` - it needs a client-side change, not a server one.
 
 # Install
 
@@ -142,10 +133,6 @@ Details: `docs/how-it-works.md`. Protocol archaeology: `docs/protocol-notes.md`.
 
 # Known issues
 
-* Some launches end at the menu in **offline mode** - a race inside the game's
-own client (it no longer crashes). PLAY.bat does **not** retry: run it again.
-* **Multiplayer/conquest** cannot be reached yet - the client only reads its
-  conquest address from a document it never populates from server data.
 * Never end the game with Task Manager: it can truncate `Config\Engine.ini`.
 
 Full list: `docs/known-issues.md`.
@@ -155,3 +142,7 @@ Full list: `docs/known-issues.md`.
 Code: MIT (see `LICENSE`). Not affiliated with, endorsed by or supported by
 Ubisoft, Related Designs or Blue Byte. This repository contains none of their
 code, data or assets.
+
+# AI disclaimer
+
+This project slopmaxxes. I used deepseek4.1 flash basically exclusively
