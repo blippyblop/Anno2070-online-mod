@@ -1725,12 +1725,12 @@ def _capture_upload(bucket, proto, method, rows=None):
     return handler
 
 
-#: What a solved daily quest is worth in career reputation.  ``properties.xml``
-#: ships ``DailyQuestReputation = 100`` (line 21267) - a real, in-game daily
-#: quest reward, unlike the career ladder itself, which is client-side.  GUESS:
-#: that value is the *in-game* currency reward's sibling; if a live session shows
-#: a different number in the quest's own "+N reputation" toast, change it here.
-DAILY_QUEST_REWARD = 100
+#: What a solved daily quest is worth in career reputation.  The wiki's career
+#: table lists "Daily Quests: Task Completed = 50, All logos", and its arithmetic
+#: agrees ("by only doing daily quests you gain 350 points a week" = 7 x 50).  The
+#: 100 in ``properties.xml`` (line 21267) is the *in-game* quest reward, not the
+#: career one.
+DAILY_QUEST_REWARD = 50
 
 
 def h_solve_daily_quest(store, r, ctx):
@@ -1763,8 +1763,8 @@ def h_solve_daily_quest(store, r, ctx):
         known.add(quest)
         log.append({"quest": quest, "ts": int(time.time()),
                     "reward": DAILY_QUEST_REWARD})
-        _add_reputation(store, _ctx_pid(ctx), DAILY_QUEST_REWARD,
-                        reason="daily quest %d" % quest)
+        _add_reputation_all(store, _ctx_pid(ctx), DAILY_QUEST_REWARD,
+                            reason="daily quest %d" % quest)
     del log[:-MAX_UPLOADS]
     store.save()
     if LOG is not None:
@@ -1831,6 +1831,7 @@ def _election_id(store):
 
 def h_get_voting_infos(store, r, ctx):
     """``list<VotingInfo>`` -- the elections the senate screen renders."""
+    _pay_election_gifts(store, ctx)        # a concluded election pays its gift
     infos = content_voting.voting_infos(elections=_elections(store,
                                                              _ctx_pid(ctx)))
     return _reply(VOTING, "GetVotingInfos_V1", infos=infos)
@@ -1882,20 +1883,15 @@ def h_vote(store, r, ctx):
     else:
         rewarded[ticket] = faction
         if previous is None:
-            # first vote in this election: pay once
+            # first vote in this election: pay the participation reward once
+            # (to every faction - the career table marks it "All logos")
             _credit_vote(store, faction, ctx)
-        elif previous != faction:
-            # a change of mind MOVES the reward to the faction the player now
-            # supports - it still pays only once per election, but the points
-            # must not stay on a faction the player has voted away from (that
-            # is what made "I voted Eco but my Eco points never arrived" true)
-            _move_vote_reward(store, pid, previous, faction)
     store.save()
     # Vote_V1's reply has NO body at all (the client skips parsing)
     return _reply(VOTING, "Vote_V1")
 
 
-def _move_vote_reward(store, pid, old_faction, new_faction):
+def _unused_move_vote_reward(store, pid, old_faction, new_faction):
     """Move an election's 50 points from the faction voted before to the new one.
 
     One payment per election stays one payment; only its faction follows the
@@ -1934,8 +1930,10 @@ def _credit_vote(store, faction, ctx):
     if faction not in content_voting.FACTIONS:
         return
     pid = _ctx_pid(ctx)
-    _add_reputation(store, pid, content_voting.VOTE_REWARD,
-                    reason="vote", faction=faction)
+    # participation is paid to all three factions (see _add_reputation_all);
+    # the voted faction is what the ballot is *for*, not what gets the points
+    _add_reputation_all(store, pid, content_voting.VOTE_REWARD,
+                        reason="vote (faction %d)" % faction)
     we = _world_event_state(store)
     wer = we.get("reputation")
     if not isinstance(wer, dict):
@@ -1970,6 +1968,26 @@ def aligned_faction(store, pid="default"):
         if choice in content_voting.FACTIONS:
             return choice
     return content_voting.FACTION_ECO
+
+
+def _add_reputation_all(store, pid, points, reason="reward"):
+    """Add career reputation to **all three factions** (the wiki's "All logos").
+
+    The shipped career table (wiki "Career Points", cross-checked against the
+    in-game tooltips) marks every *participation* reward with "All logos" - both
+    election participations (50), the election gift (25, elected faction),
+    daily quests (50), global-event missions (50/150/300) and the crisis
+    thresholds (50/100/150/200).  Only campaign/single-mission points are
+    faction-specific.  Crediting one arbitrary faction is what made a player see
+    "I earned points and my faction still shows 0".
+    """
+    points = _as_int(points, 0)
+    if not points:
+        return 0
+    total = 0
+    for faction in content_voting.FACTIONS:
+        total = _add_reputation(store, pid, points, reason=reason, faction=faction)
+    return total
 
 
 def _bump_reputation_version(player_doc, delta=1):
@@ -2045,7 +2063,8 @@ def _credit_mission(store, pid, record):
     record["points"], record["rep"] = points, rep_points
 
     p = store.player(pid)
-    _add_reputation(store, pid, rep_points, reason="mission %s" % record.get("id"))
+    _add_reputation_all(store, pid, rep_points,
+                        reason="mission %s" % record.get("id"))
 
     we = _world_event_state(store)
     wer = we.get("reputation")
@@ -2380,14 +2399,61 @@ def _pay_campaign_tiers(store, we, summary, ctx=None):
     for tier in fresh:
         reward = _as_int(rewards[min(tier, len(rewards)) - 1], 0)
         for pid in pids:
-            _add_reputation(store, pid, reward,
-                            reason="campaign tier %d" % tier)
+            _add_reputation_all(store, pid, reward,
+                                reason="campaign tier %d" % tier)
         done.append(int(tier))                 # record BEFORE paying out
     if LOG is not None:
         LOG("campaign %s: tiers %r crossed, %d reputation each to %r"
             % (key, fresh, rewards[0] if rewards else 0, pids))
     store.save()
     return fresh
+
+
+#: The wiki's "Election Gift": 25 career points to the ELECTED faction when an
+#: election concludes (the only reward in the career table that is not "All
+#: logos" and not a campaign mission).
+ELECTION_GIFT = 25
+
+
+def _pay_election_gifts(store, ctx=None):
+    """Pay the 25-point election gift when an election has concluded.
+
+    Detected lazily: whenever a voting document is requested and the running
+    election index has advanced since the last check, the *previous* election's
+    winner faction gets +25 for every player.  Idempotent per ``(slot, index)``
+    through ``voting.gifts``; the very first check only records a baseline so a
+    brand-new save does not get a gift for an election it never saw.
+    """
+    voting = store.state.setdefault("voting", {})
+    gifts = voting.get("gifts")
+    if not isinstance(gifts, dict):
+        gifts = voting["gifts"] = {}
+    paid = []
+    for slot in sorted(_elections(store)):
+        try:
+            index = content_voting.election_index(slot)
+        except Exception:                              # noqa: BLE001
+            continue
+        key = str(slot)
+        previous = gifts.get(key)
+        if previous is None:
+            gifts[key] = index                         # baseline, nothing to pay
+            continue
+        previous = _as_int(previous, index)
+        if previous >= index:
+            continue
+        winner = content_voting.election_winner(slot, previous)
+        for pid in _campaign_players(store, None, ctx):
+            _add_reputation(store, pid, ELECTION_GIFT,
+                            reason="election gift (slot %d, election %d)"
+                                   % (slot, previous), faction=winner)
+        gifts[key] = index
+        paid.append((slot, previous, winner))
+    if paid:
+        store.save()
+        if LOG is not None:
+            LOG("voting: election gift paid %r" % (paid,))
+    return paid
 
 
 def _campaign(store, now=None, ctx=None):

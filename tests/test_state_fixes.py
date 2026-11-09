@@ -54,6 +54,11 @@ def check(name, cond, detail=""):
         print(f"  FAIL {name} {detail}")
 
 
+def all_factions(points):
+    """The wiki's "All logos": participation rewards go to every faction."""
+    return {f: points for f in CV.FACTIONS}
+
+
 def le32(v):
     return (int(v) & 0xFFFFFFFF).to_bytes(4, "little")
 
@@ -125,7 +130,8 @@ def test_vote_reputation(tmp):
     store = R.open_store(path)
     payload(VOTING, "Vote_V1", store, le32(0) + le32(CV.FACTION_TYCOON))
     rep = store.player("default").get("reputation")
-    check("reputation recorded", rep == {CV.FACTION_TYCOON: CV.VOTE_REWARD}, rep)
+    check("reputation recorded on every faction",
+          rep == all_factions(CV.VOTE_REWARD), rep)
     check("the world-event document agrees",
           (store.state["worldEvent"]["reputation"] or {}).get("default")
           == CV.VOTE_REWARD, store.state["worldEvent"].get("reputation"))
@@ -133,8 +139,7 @@ def test_vote_reputation(tmp):
     reopened = R.open_store(path)                     # a real restart
     wire = map_of(body_of(PROFILE, "GetReputationPoints_V1", reopened))
     check("GetReputationPoints_V1 serves it after a restart",
-          wire == {CV.FACTION_ECO: 0, CV.FACTION_TYCOON: CV.VOTE_REWARD,
-                   CV.FACTION_TECH: 0}, wire)
+          wire == all_factions(CV.VOTE_REWARD), wire)
     check("AreReputationPointsMissing_V1 is now false",
           body_of(PROFILE, "AreReputationPointsMissing_V1", reopened,
                   le32(CV.FACTION_TYCOON))[:1] == b"\x00")
@@ -145,14 +150,13 @@ def test_vote_reputation(tmp):
     again = R.open_store(path)
     check("a vote in the other election adds up",
           map_of(body_of(PROFILE, "GetReputationPoints_V1", again))
-          == {CV.FACTION_ECO: 0, CV.FACTION_TYCOON: 2 * CV.VOTE_REWARD,
-              CV.FACTION_TECH: 0})
+          == all_factions(2 * CV.VOTE_REWARD),
+          map_of(body_of(PROFILE, "GetReputationPoints_V1", again)))
     # repeating the SAME vote must not farm points (or inflate the bars)
     payload(VOTING, "Vote_V1", again, le32(0) + le32(CV.FACTION_TYCOON))
     check("repeating a vote pays nothing more",
           map_of(body_of(PROFILE, "GetReputationPoints_V1", again))
-          == {CV.FACTION_ECO: 0, CV.FACTION_TYCOON: 2 * CV.VOTE_REWARD,
-              CV.FACTION_TECH: 0},
+          == all_factions(2 * CV.VOTE_REWARD),
           map_of(body_of(PROFILE, "GetReputationPoints_V1", again)))
 
 
@@ -210,8 +214,8 @@ def test_mission_payout(tmp):
           store.state["worldEvent"]["completedMissions"][-1].get("points") == 1
           and store.state["worldEvent"]["completedMissions"][-1].get("rep") == 50,
           store.state["worldEvent"]["completedMissions"][-1])
-    check("career reputation is credited",
-          store.player("default")["reputation"] == {0: 50},
+    check("career reputation is credited to every faction",
+          store.player("default")["reputation"] == all_factions(50),
           store.player("default")["reputation"])
     check("the event reputation grows too",
           store.state["worldEvent"]["reputation"].get("default") == 1,
@@ -226,13 +230,13 @@ def test_mission_payout(tmp):
     check("two missions survived the restart",
           len(reopened.state["worldEvent"]["completedMissions"]) == 2)
     check("career reputation accumulates",
-          reopened.player("default")["reputation"] == {0: 200},
+          reopened.player("default")["reputation"] == all_factions(200),
           reopened.player("default")["reputation"])
     check("a repeat completion does not pay twice",
           (solve_again := R.respond_payload(WORLD, "CompleteMission_V1",
                                             store=reopened,
                                             body=PROLOGUE + le32(3054015) + b"\x06\x00Player\x00")) is not None
-          and reopened.player("default")["reputation"] == {0: 200},
+          and reopened.player("default")["reputation"] == all_factions(200),
           reopened.player("default")["reputation"])
 
     stats = CE.event_stats(reopened.state["worldEvent"])
@@ -252,7 +256,7 @@ def test_career_presence(tmp):
     payload(VOTING, "Vote_V1", store, le32(0) + le32(CV.FACTION_TYCOON))
     rep = map_of(body_of(PROFILE, "GetReputationPoints_V1", store))
     check("all three factions are served once any is earned",
-          rep == {0: 0, 1: CV.VOTE_REWARD, 2: 0}, rep)
+          rep == all_factions(CV.VOTE_REWARD), rep)
     for faction in CV.FACTIONS:
         flag = body_of(PROFILE, "AreReputationPointsMissing_V1", store, le32(faction))
         check("faction %d reports present" % faction, flag[:1] == b"\x00", flag)
@@ -598,7 +602,10 @@ def test_json_file_is_the_save(tmp):
     out = subprocess.run([sys.executable, report, path], stdout=subprocess.PIPE,
                          stderr=subprocess.STDOUT, universal_newlines=True,
                          timeout=60).stdout
-    check("the report reads the career points", "career points    : 50" in out, out[:400])
+    # one vote now pays every faction (the wiki's "All logos"), so the report's
+    # total is 3 x 50
+    check("the report reads the career points", "career points    : 150" in out,
+          out[:400])
     check("the report lists the ARK box", "ARK item box     : 6 item(s)" in out, out[:400])
     check("the report shows the vote", "your vote Eco" in out, out[:400])
     missing = os.path.join(tmp, "nope", "state.json")
@@ -658,8 +665,8 @@ def test_the_request_prologue(tmp):
           int(infos["1"]["f6"]) == CV.FACTION_TECH, infos)
     check("... and not on the senate",
           int(infos.get("0", {}).get("f6", -1)) == -1, infos)
-    check("... and it pays its reputation to the faction voted for",
-          store.player("default")["reputation"].get(CV.FACTION_TECH) == CV.VOTE_REWARD,
+    check("... and it pays its reputation (to every faction)",
+          store.player("default")["reputation"] == all_factions(CV.VOTE_REWARD),
           store.player("default")["reputation"])
 
     # a senate vote on the same store goes to slot 0 and pays its own faction
@@ -672,8 +679,7 @@ def test_the_request_prologue(tmp):
           and int(infos["1"]["f6"]) == CV.FACTION_TECH, infos)
     rep = R.open_store(os.path.join(tmp, "prologue.json")).player("default")["reputation"]
     check("each vote credited its own faction",
-          rep.get(CV.FACTION_ECO) == CV.VOTE_REWARD
-          and rep.get(CV.FACTION_TECH) == CV.VOTE_REWARD, rep)
+          rep == all_factions(2 * CV.VOTE_REWARD), rep)
 
     # 2. GetVoteCount reads the election id from offset 4, not from 0.  The
     #    panel is never blank (content_voting seeds filler counts), so the
@@ -784,7 +790,7 @@ def test_statistics_persist(tmp):
     check("SolveDailyQuest_V1 is captured", bool(quests), quests)
     after_rep = sum((store.player("default").get("reputation") or {}).values())
     check("... and it paid its career reputation",
-          after_rep - before_rep == R.DAILY_QUEST_REWARD,
+          after_rep - before_rep == 3 * R.DAILY_QUEST_REWARD,
           (before_rep, after_rep))
     payload(PROFILE, "SolveDailyQuest_V1", store, le32(1) + le32(4025240))
     check("... but only once per quest id",
@@ -798,17 +804,17 @@ def test_reputation_never_goes_backwards(tmp):
     print("reputation writes are add-only (a stale client echo cannot delete)")
     store = R.open_store(os.path.join(tmp, "rep.json"))
     payload(VOTING, "Vote_V1", store, le32(0) + le32(CV.FACTION_TYCOON))
-    check("the vote paid 50", store.player("default")["reputation"] == {CV.FACTION_TYCOON: 50},
+    check("the vote paid 50", store.player("default")["reputation"] == all_factions(50),
           store.player("default")["reputation"])
     payload(PROFILE, "SetReputationPoints_V1", store,
             le32(CV.FACTION_TYCOON) + le32(0))
     check("a lower echo is ignored",
-          store.player("default")["reputation"] == {CV.FACTION_TYCOON: 50},
+          store.player("default")["reputation"] == all_factions(50),
           store.player("default")["reputation"])
     payload(PROFILE, "SetReputationPoints_V1", store,
             le32(CV.FACTION_TYCOON) + le32(120))
     check("a higher echo is accepted",
-          store.player("default")["reputation"] == {CV.FACTION_TYCOON: 120},
+          {f: (120 if f == CV.FACTION_TYCOON else 50) for f in CV.FACTIONS},
           store.player("default")["reputation"])
 
 
@@ -830,10 +836,10 @@ def test_campaign_payout(tmp):
     R._pay_campaign_tiers(store, we, fake)
     rep = store.player("default")["reputation"]
     check("two crossed tiers paid +50 and +100",
-          sum(rep.values()) == 150, rep)
+          sum(rep.values()) == 450, rep)
     R._pay_campaign_tiers(store, we, fake)
     check("paying the same tiers twice adds nothing",
-          sum(store.player("default")["reputation"].values()) == 150,
+          sum(store.player("default")["reputation"].values()) == 450,
           store.player("default")["reputation"])
     check("the crossed tiers are recorded in the save",
           we["campaignPaid"][str(summary["index"])] == [1, 2], we["campaignPaid"])
@@ -842,7 +848,7 @@ def test_campaign_payout(tmp):
     fake3 = dict(fake, tiersReached=3)
     R._pay_campaign_tiers(store, we, fake3)
     check("a newly crossed tier pays only itself",
-          sum(store.player("default")["reputation"].values()) == 300,
+          sum(store.player("default")["reputation"].values()) == 900,
           store.player("default")["reputation"])
 
     # the live document carries the campaign, and the reply of CompleteMission
@@ -936,7 +942,7 @@ def test_council_vote_survives_a_restart(tmp):
           1 in docs and docs[1][0] == CV.COUNCIL_VOTE_ID, docs)
     check("... and its own vote survives the restart", docs[1][2] == CV.FACTION_TECH, docs)
     check("... and the vote paid once",
-          reopened.player("default")["reputation"] == {CV.FACTION_TECH: CV.VOTE_REWARD},
+          reopened.player("default")["reputation"] == all_factions(CV.VOTE_REWARD),
           reopened.player("default")["reputation"])
 
     # C. voting again (a client that still shows "not voted") pays nothing and
@@ -1060,8 +1066,8 @@ def test_career_credit_paths(tmp):
     check("a profile with no points reports them missing",
           ask_missing() == 1)
     payload(VOTING, "Vote_V1", store, le32(0) + le32(CV.FACTION_ECO))
-    check("the senate vote paid Eco", credits() == {CV.FACTION_ECO: CV.VOTE_REWARD},
-          credits())
+    check("the senate vote paid every faction",
+          credits() == all_factions(CV.VOTE_REWARD), credits())
     check("... and the client is now told the points are missing (stale copy)",
           ask_missing() == 1, ask_missing())
     served = fetch()
@@ -1071,20 +1077,18 @@ def test_career_credit_paths(tmp):
 
     # B. a change of mind moves the 50, it does not stack
     payload(VOTING, "Vote_V1", store, le32(0) + le32(CV.FACTION_TECH))
-    check("changing the vote moves the reward to the new faction",
-          credits() == {CV.FACTION_ECO: 0, CV.FACTION_TECH: CV.VOTE_REWARD},
-          credits())
+    check("a change of vote pays nothing extra (participation is all-faction)",
+          credits() == all_factions(CV.VOTE_REWARD), credits())
     check("a change of mind never pays twice",
-          sum(credits().values()) == CV.VOTE_REWARD, credits())
+          sum(credits().values()) == 3 * CV.VOTE_REWARD, credits())
 
     # C. a world-event mission has no faction: it goes to the aligned one
     #    (the last vote), and it survives a restart
     R.respond_payload(WORLD, "CompleteMission_V1", store=store,
                       body=PROLOGUE + le32(3054014) + b"\x06\x00Player\x00")
     after_mission = credits()
-    check("a mission pays into the faction the player voted for",
-          after_mission.get(CV.FACTION_TECH) == CV.VOTE_REWARD + 50,
-          after_mission)
+    check("a mission pays every faction (the wiki's \"All logos\")",
+          after_mission == all_factions(CV.VOTE_REWARD + 50), after_mission)
     check("... and it is written to the save file",
           {int(k): int(v) for k, v in
            R.open_store(path).player("default")["reputation"].items()} == after_mission)
@@ -1095,9 +1099,9 @@ def test_career_credit_paths(tmp):
     fresh = R.open_store(fresh_path)
     R.respond_payload(WORLD, "CompleteMission_V1", store=fresh,
                       body=PROLOGUE + le32(3054014) + b"\x06\x00Player\x00")
-    check("without a vote, a mission credits Eco",
+    check("without a vote, a mission still credits every faction",
           {int(k): int(v) for k, v in
-           fresh.player("default")["reputation"].items()} == {CV.FACTION_ECO: 50},
+           fresh.player("default")["reputation"].items()} == all_factions(50),
           fresh.player("default")["reputation"])
 
     # E. a campaign tier pays every player once (the third credit path)
@@ -1109,16 +1113,19 @@ def test_career_credit_paths(tmp):
     before = sum(credits().values())
     R._pay_campaign_tiers(store, we, fake, {"pid": "default"})
     check("a crossed campaign tier pays its reputation",
-          sum(credits().values()) == before + CE.CAMPAIGN_TIER_REWARDS[0],
+          sum(credits().values()) == before + 3 * CE.CAMPAIGN_TIER_REWARDS[0],
           credits())
     R._pay_campaign_tiers(store, we, fake, {"pid": "default"})
-    check("... once only", sum(credits().values()) == before + CE.CAMPAIGN_TIER_REWARDS[0])
+    check("... once only",
+          sum(credits().values()) == before + 3 * CE.CAMPAIGN_TIER_REWARDS[0])
 
     # F. a client echo below our value is ignored, above it is accepted
     payload(PROFILE, "SetReputationPoints_V1", store,
             le32(CV.FACTION_ECO) + le32(0))
+    before_echo = credits()
     check("a stale client echo cannot lower a total",
-          credits().get(CV.FACTION_ECO, 0) == 0, credits())
+          credits() == before_echo
+          and credits().get(CV.FACTION_ECO, 0) > 0, credits())
     payload(PROFILE, "SetReputationPoints_V1", store,
             le32(CV.FACTION_ECO) + le32(500))
     check("a higher client echo is accepted",

@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.1.6 - 2026-11-09
+
+Fixed (from the downloaded wiki, cross-checked against the game data)
+- **Participation rewards now pay EVERY faction.** The wiki's career table marks
+  daily quests, senate participation, world-council participation, global-event
+  missions (50/150/300) and the crisis thresholds (50/100/150/200) with the
+  **"All logos"** icon = all three factions; only campaign/single missions are
+  faction-specific. Crediting one arbitrary faction was the real cause of "I
+  completed a world event, earned points, and my faction showed 0".
+  `_add_reputation_all()` is used by votes, missions, campaign tiers and daily
+  quests.
+- **The election gift exists**: when an election concludes, the **elected**
+  faction gets 25 points for every player (`_pay_election_gifts`, detected when
+  the cycle rolls, idempotent per slot + election index). The wiki's only reward
+  that is not "All logos" and not a campaign mission.
+- **Daily quest pays 50, not 100** - the wiki's own arithmetic (350/week = 7x50)
+  beats the 100 in `properties.xml`, which is the in-game quest reward.
+- `repair_state.py --rebalance-career` lifts a save written under the old
+  single-faction rule to the all-faction model (one-off, idempotent, keeps a
+  backup).
+
+Docs
+- New `docs/wiki-gaps.md`: the whole wiki (489 pages) compared against this
+  server - one row per online feature (wiki says | we do | verdict), the cheap
+  wins, and the four places where our own docs were wrong (career unlocks are
+  gated client-side, 13 levels/12,650 with Deep Ocean, senate rounds are meant to
+  conclude, and the matchmaking half is *not* implemented).
+- `docs/known-issues.md` #10: the Ark Politics tab's gate is proven client-side
+  (`FUN_1403d7ec0` bails out when the local world has no politics object); the
+  wiki's "only in continuous gameplay" is the *design* reason, and no server
+  payload can create that object.
+
 ## 0.1.5 - 2026-11-09
 
 Fixed
