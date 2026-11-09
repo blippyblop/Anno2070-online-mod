@@ -8,16 +8,25 @@ Implements online features to a local server process. Patches your Anno 2070 exe
 
 This is not fully tested so if you find features that don't work that should; or crashes, find out how to replicate the crash then provide me with what I need to debug it (copy of the save file, instructions on where the crash/feature is missing, and profile save if relevant)
 
-Currently working (I think):
+Currently working (verified in game, v0.1.9):
 
-* Elections
-* Ark storage (items and stuff)
-* Profile and Career progression
-* Event Quests
+* Elections - senate and World Council, with a simulated electorate and an
+  incumbent; your vote survives a restart
+* Ark storage - items in the socket group of their quality; a login never wipes
+  the box; missions pay their items
+* Profile - portrait, icon, colour, title, ark
+* Career progression - votes, event missions, campaign tiers, daily quests and
+  the election gift, all written to `server\state.json` and served back
+* Event Quests - a month-long campaign per chapter, with a feed of fictional
+  players beating its missions *and your own completions* making up the
+  100,000..125,000 point world total
+* Mail, chat, friends, achievements, statistics
 
 Not working:
 
-* Multiplayer
+* The Ark Politics tab - gated client-side on a world object only a genuine
+  continuous-world session creates (`docs/known-issues.md` #10)
+* Multiplayer / conquest
 
 
 > Status detail: the online session, ARK, elections/votes, world events and the
@@ -29,18 +38,23 @@ Not working:
 
 ## The PLAY.bat build (recommended right now)
 
-Download **`Anno2070Online-playbat-v0.1.0.zip`** from the release, extract it so
-the folder sits inside your Anno 2070 folder, install Python 3.8+ once, then
-double-click `Anno2070Online\PLAY.bat`. This is the build that is verified
-working (3 consecutive clean launches). The .exe installer below is newer but its
-launcher does not yet behave like PLAY.bat - use this zip until that is fixed.
+Download **`Anno2070Online-playbat-v0.1.9.zip`** from the
+[latest release](../../releases/latest), extract it so the folder sits inside
+your Anno 2070 folder, install Python 3.8+ once, then double-click
+`Anno2070Online\PLAY.bat`. This is the build that is verified working and the
+only one shipped since v0.1.1 (see `CHANGELOG.md`; the release notes say what
+changed and what is still limited).
 
 ```
 ...\Anno 2070\Anno5.exe
 ...\Anno 2070\Anno2070Online\PLAY.bat      <- double-click this
 ```
 
-## The .exe build (experimental)
+## The .exe build (experimental, NOT in this release)
+
+Not shipped since v0.1.1: the launcher in it does not yet behave like PLAY.bat,
+so the PLAY.bat zip above is the supported way in. The description below is kept
+for the record.
 
 1. Install Anno 2070 (3.0.8051 / GOLDMASTER) as usual. (This is the latest steam release)
 2. Download `Anno2070Online-Setup.exe` from the [latest release](../../releases/latest)
